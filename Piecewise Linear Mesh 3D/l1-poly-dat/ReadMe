@@ -1,0 +1,8 @@
+===============
+Data Materials
+===============
+
+All data is stored in "vtk" and "obj" format. You can use Paraview(http://www.paraview.org/) to visualize and analysis them.
+
+Under hex folder, there are three files hexahedral/original tetrahedral/polycube deformed meshes for each model.
+Under quad folder, there are quad/input triangle/polycube deformed meshes for each model.
