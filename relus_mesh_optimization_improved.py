@@ -25,6 +25,11 @@ from contour_alignment_improved import (
     contour_alignment_v3_fully_vectorized,
     compute_contour_loss
 )
+from improved_loss_v2 import (
+    improved_loss_function,
+    get_beta_schedule,
+    get_lambda_schedule
+)
 
 # ============================================================================================
 # IMPROVED LOSS FUNCTIONS WITH NUMERICAL STABILITY
@@ -262,18 +267,22 @@ def optimize_relu_mesh(
     lr_vertex: float = 2e-3,
     lr_offset: float = 2e-2,  # 10x larger for plane offsets
     # Beta schedule
-    beta_start: float = 4.0,  # Start higher to avoid vanishing gradients
-    beta_end: float = 20.0,   # Don't go too high
-    beta_schedule: str = "sigmoid",  # "linear", "sigmoid", or "log"
+    beta_start: float = 2.0,  # New default as per spec
+    beta_end: float = 25.0,   # New default as per spec
+    beta_warmup_fraction: float = 0.2,  # 20% warmup
     # Lambda schedule  
-    lambda_contour: Tuple[float, float] = (1.0, 4.0),  # Start high
-    lambda_smooth: float = 0.1,
-    lambda_area: Tuple[float, float] = (0.0, 100.0),
-    reverse_schedule: bool = True,  # Start with contour loss
+    lambda_area: float = 1.0,  # Area balance weight
+    lambda_adj_start: float = 0.0,  # Adjacent direction start
+    lambda_adj_end: float = 5.0,  # Adjacent direction end
+    lambda_TV: float = 0.05,  # Total variation weight
     # Optimization settings
-    use_dynamic_reweighting: bool = True,
+    use_dynamic_reweighting: bool = False,  # Disabled by default for new loss
     gradient_clip: float = 5.0,
     weight_decay: float = 1e-4,
+    # Learning rate schedule
+    lr_warmup_fraction: float = 0.2,
+    lr_decay_points: List[float] = [0.2, 0.8],
+    lr_decay_factors: List[float] = [1.0, 0.5, 0.1],
     # Multi-scale settings
     use_multiscale: bool = False,
     scale_factors: List[float] = [0.25, 0.5, 1.0],
@@ -310,25 +319,36 @@ def optimize_relu_mesh(
         {'params': [plane_offsets], 'lr': lr_offset}
     ], weight_decay=weight_decay)
     
-    # Set up schedules
-    def get_schedule_value(schedule_type: str, t: float, start: float, end: float) -> float:
-        """Get scheduled value based on schedule type."""
-        if schedule_type == "linear":
-            return start + (end - start) * t
-        elif schedule_type == "sigmoid":
-            # Sigmoid ramp: slow start, fast middle, slow end
-            s = 1 / (1 + np.exp(-10 * (t - 0.5)))
-            return start + (end - start) * s
-        elif schedule_type == "log":
-            # Logarithmic ramp: fast start, slow end
-            s = np.log(1 + 9 * t) / np.log(10)
-            return start + (end - start) * s
+    # Set up learning rate schedule
+    def get_lr_multiplier(t: float) -> float:
+        """Get learning rate multiplier based on schedule."""
+        if t < lr_warmup_fraction:
+            # Warmup phase
+            return t / lr_warmup_fraction
+        elif t < lr_decay_points[1]:
+            # First decay phase
+            return lr_decay_factors[1]
         else:
-            return start
+            # Final decay phase
+            return lr_decay_factors[2]
     
     # Initialize monitoring tools
     grad_monitor = GradientMonitor()
     loss_reweighter = DynamicLossReweighter() if use_dynamic_reweighting else None
+    
+    # Build triangle adjacency for new loss
+    from scipy.sparse import csr_matrix
+    rows, cols = [], []
+    for i, adj in enumerate(tri_adj):
+        for j in adj:
+            if j >= 0:
+                rows.append(i)
+                cols.append(j)
+    triangle_adjacency = csr_matrix(
+        (np.ones(len(rows)), (rows, cols)), 
+        shape=(len(faces), len(faces))
+    ).to_dense()
+    triangle_adjacency = torch.from_numpy(triangle_adjacency).float().to(device)
     
     # Training history
     history = []
@@ -343,48 +363,33 @@ def optimize_relu_mesh(
         # Progress fraction
         t = it / n_iters
         
-        # Update beta
-        beta = get_schedule_value(beta_schedule, t, beta_start, beta_end)
+        # Update beta and lambda_adj according to schedule
+        beta = get_beta_schedule(it, n_iters, beta_start, beta_end, beta_warmup_fraction)
+        lambda_adj = get_lambda_schedule(it, n_iters, lambda_adj_start, lambda_adj_end, beta_warmup_fraction)
         
-        # Update lambdas
-        if reverse_schedule and t < 0.3:
-            # First 30%: focus on contour alignment
-            lambda_c = lambda_contour[1]
-            lambda_a = 0.0
-            lambda_s = lambda_smooth * 0.1
-        else:
-            # After 30%: gradually introduce other losses
-            t_adj = (t - 0.3) / 0.7 if reverse_schedule else t
-            lambda_c = get_schedule_value("linear", t_adj, lambda_contour[0], lambda_contour[1])
-            lambda_a = get_schedule_value("linear", t_adj, lambda_area[0], lambda_area[1])
-            lambda_s = lambda_smooth
-        
-        # Get current loss weights from dynamic reweighter
-        if loss_reweighter:
-            weights = loss_reweighter.weights
-        else:
-            weights = {'contour': 1.0, 'smooth': 1.0, 'area': 1.0}
+        # Update learning rate
+        lr_mult = get_lr_multiplier(t)
+        for param_group in optimizer.param_groups:
+            if param_group['params'][0] is f_values:
+                param_group['lr'] = lr_vertex * lr_mult
+            else:
+                param_group['lr'] = lr_offset * lr_mult
         
         # Forward pass
         optimizer.zero_grad()
         
-        # Compute losses
-        contour_loss = contour_alignment_v1_fixed_normals(
-            v, f, f_values, plane_normals, plane_offsets, 
-            beta_edge=beta, min_intersections=20
-        )
-        
-        smooth_loss = smoothness_loss_improved(f_values, vert_edges)
-        
-        area_loss, area_fracs = area_balance_loss_improved(
-            v, f, f_values, beta, mesh_area, start_beta=beta_start
-        )
-        
-        # Combined loss with dynamic weights
-        total_loss = (
-            lambda_c * weights['contour'] * contour_loss +
-            lambda_s * weights['smooth'] * smooth_loss +
-            lambda_a * weights['area'] * area_loss
+        # Compute new improved loss
+        total_loss, loss_components = improved_loss_function(
+            points=v,
+            triangles=f,
+            f_values=f_values,
+            edges=vert_edges,
+            triangle_adjacency=triangle_adjacency,
+            beta=beta,
+            lambda_area=lambda_area,
+            lambda_adj=lambda_adj,
+            lambda_TV=lambda_TV,
+            num_channels=6
         )
         
         # Backward pass
@@ -392,10 +397,8 @@ def optimize_relu_mesh(
         
         # Monitor gradients before clipping
         grad_norms = {
-            'contour': f_values.grad.norm().item() if lambda_c > 0 else 0,
-            'smooth': f_values.grad.norm().item() if lambda_s > 0 else 0,
-            'area': f_values.grad.norm().item() if lambda_a > 0 else 0,
-            'offsets': plane_offsets.grad.norm().item()
+            'total': f_values.grad.norm().item() if f_values.grad is not None else 0,
+            'offsets': plane_offsets.grad.norm().item() if plane_offsets.grad is not None else 0
         }
         grad_monitor.update(grad_norms)
         
@@ -411,9 +414,7 @@ def optimize_relu_mesh(
             for k, idx in enumerate(pinned_indices[:6]):
                 f_values[idx] = pin_mask[k]
         
-        # Update dynamic loss weights
-        if loss_reweighter and it % 50 == 0:
-            loss_reweighter.update_weights(grad_norms)
+        # No dynamic reweighting for new loss by default
         
         # Track best loss
         if total_loss.item() < best_loss:
@@ -426,25 +427,24 @@ def optimize_relu_mesh(
             
             print(f"\nIter {it:6d}/{n_iters}")
             print(f"  Total loss: {total_loss.item():.3e} (best: {best_loss:.3e} @ iter {best_iter})")
-            print(f"  Components: contour={contour_loss.item():.3e}, smooth={smooth_loss.item():.3e}, area={area_loss.item():.3e}")
-            print(f"  Schedules: β={beta:.1f}, λ_c={lambda_c:.2f}, λ_s={lambda_s:.2f}, λ_a={lambda_a:.1f}")
+            print(f"  Components: area={loss_components['area']:.3e}, adj={loss_components['adjacent']:.3e}, TV={loss_components['tv']:.3e}")
+            print(f"  Schedules: β={beta:.1f}, λ_adj={lambda_adj:.2f}, LR mult={lr_mult:.2f}")
             print(f"  Grad norms: {grad_norms}")
-            if loss_reweighter:
-                print(f"  Dynamic weights: {weights}")
-            print(f"  Area fractions: {area_fracs.cpu().numpy()}")
+            print(f"  Area fractions: {loss_components['area_fractions']}")
+            print(f"  Mean boundary weight: {loss_components['mean_boundary_weight']:.3f}")
             
             # Store history
             history.append({
                 'iter': it,
                 'total_loss': total_loss.item(),
-                'contour_loss': contour_loss.item(),
-                'smooth_loss': smooth_loss.item(),
-                'area_loss': area_loss.item(),
+                'area_loss': loss_components['area'],
+                'adjacent_loss': loss_components['adjacent'],
+                'tv_loss': loss_components['tv'],
                 'beta': beta,
-                'lambdas': {'contour': lambda_c, 'smooth': lambda_s, 'area': lambda_a},
+                'lambdas': {'area': lambda_area, 'adj': lambda_adj, 'TV': lambda_TV},
                 'grad_norms': grad_norms,
-                'weights': weights.copy() if loss_reweighter else None,
-                'area_fractions': area_fracs.cpu().numpy().copy()
+                'area_fractions': loss_components['area_fractions'].copy(),
+                'mean_boundary_weight': loss_components['mean_boundary_weight']
             })
         
         # Early stopping check
