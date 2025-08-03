@@ -173,9 +173,9 @@ def area_balance_loss_corrected(f_values: torch.Tensor, faces: torch.Tensor,
 
 def compute_edge_weights(d_v: torch.Tensor, edges: torch.Tensor, beta: float) -> torch.Tensor:
     """
-    Compute edge weights using sigmoid (NO THRESHOLD).
+    Compute edge weights using sigmoid with CLAMPED beta to prevent saturation.
     
-    CORRECTED: No filtering of small weights - they contain important gradients!
+    CRITICAL: Clamp beta to prevent saturation that kills gradients!
     """
     va, vb = edges.T
     d_i = d_v[va]  # (E, 15)
@@ -184,8 +184,10 @@ def compute_edge_weights(d_v: torch.Tensor, edges: torch.Tensor, beta: float) ->
     # Element-wise product for each pair
     prod = d_i * d_j  # (E, 15)
     
-    # Sigmoid weight (NO THRESHOLD!)
-    w_e = torch.sigmoid(-beta * prod)  # (E, 15)
+    # CRITICAL FIX: Clamp beta to prevent saturation
+    # This keeps gradients flowing even at high beta values
+    beta_clamped = min(beta, 12.0)  # Cap at 12 to prevent saturation
+    w_e = torch.sigmoid(-beta_clamped * prod)  # (E, 15)
     
     return w_e
 

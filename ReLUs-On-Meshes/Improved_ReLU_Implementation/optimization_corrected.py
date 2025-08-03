@@ -143,25 +143,46 @@ def train_stage(config: TrainingConfig,
     
     # Training loop
     for step in range(config.steps):
-        # Parameter scheduling
-        progress = step / config.steps
-        beta = schedule.interpolate_param(config.beta_start, config.beta_end, progress)
-        
-        # CRITICAL: Keep lambda_adj = 0 until beta >= 2 to avoid gradient explosion
-        # Then freeze it once raw_adj drops below 0.15
-        if beta < 2.0:
-            lambda_adj = 0.0
-        elif lambda_adj_frozen:
-            lambda_adj = lambda_adj_frozen_value
+        # CRITICAL: Staged parameter scheduling to prevent saturation
+        if config.steps >= 300000:  # Use staged schedule for long runs
+            if step < 3000:  # Warm-up
+                progress = step / 3000
+                beta = 0.0 + 4.0 * progress
+                lambda_adj = 0.0  # No adjacency during warm-up
+                lambda_tv = 0.05
+            elif step < 50000:  # Stage A
+                progress = (step - 3000) / (50000 - 3000)
+                beta = 4.0 + 4.0 * progress  # 4→8
+                lambda_adj = 0.0 + 3.0 * progress  # 0→3
+                lambda_tv = 0.05
+            elif step < 120000:  # Stage B
+                progress = (step - 50000) / (120000 - 50000)
+                beta = 8.0 + 4.0 * progress  # 8→12
+                lambda_adj = 3.0 + 2.0 * progress  # 3→5
+                lambda_tv = 0.05
+            elif step < 200000:  # Stage C
+                progress = (step - 120000) / (200000 - 120000)
+                beta = 12.0 + 6.0 * progress  # 12→18
+                lambda_adj = 5.0  # Hold at 5
+                lambda_tv = 0.05
+            else:  # Stage D
+                progress = (step - 200000) / (300000 - 200000)
+                beta = 18.0 + 6.0 * progress  # 18→24
+                lambda_adj = 5.0 + 3.0 * progress  # 5→8
+                lambda_tv = 0.05
         else:
-            lambda_adj = schedule.interpolate_param(config.lambda_adj_start, config.lambda_adj_end, progress)
-        
-        # CRITICAL FIX: Decay TV as beta increases
-        if beta <= 10.0:
-            lambda_tv = config.lambda_tv  # Full TV during warm-up
-        else:
-            # Decay from 0.1 to 0.01 as beta goes from 10 to 32
-            lambda_tv = config.lambda_tv * max(0.1, 10.0 / beta)
+            # Original scheduling for shorter runs
+            progress = step / config.steps
+            beta = schedule.interpolate_param(config.beta_start, config.beta_end, progress)
+            
+            if beta < 2.0:
+                lambda_adj = 0.0
+            elif lambda_adj_frozen:
+                lambda_adj = lambda_adj_frozen_value
+            else:
+                lambda_adj = schedule.interpolate_param(config.lambda_adj_start, config.lambda_adj_end, progress)
+            
+            lambda_tv = config.lambda_tv * max(0.1, 10.0 / beta) if beta > 10 else config.lambda_tv
         
         optimizer.zero_grad()
         
@@ -289,9 +310,24 @@ def train_stage(config: TrainingConfig,
                 
                 print('='*60 + '\n')
             
-            # Print progress
+            # Print progress with stage info
             if step % 1000 == 0:
-                print(f"Step {step}/{config.steps}: Loss={loss.item():.4f}, "
+                # Determine current stage for display
+                if config.steps >= 300000:
+                    if step < 3000:
+                        stage_name = "Warm-up"
+                    elif step < 50000:
+                        stage_name = "Stage A"
+                    elif step < 120000:
+                        stage_name = "Stage B"
+                    elif step < 200000:
+                        stage_name = "Stage C"
+                    else:
+                        stage_name = "Stage D"
+                else:
+                    stage_name = "Direct"
+                
+                print(f"[{stage_name}] Step {step}/{config.steps}: Loss={loss.item():.4f}, "
                       f"Area={loss_dict['area'].item():.4f}, "
                       f"Adj={loss_dict['adjacency'].item():.4f}, "
                       f"TV={loss_dict['tv'].item():.4f}")
@@ -317,17 +353,33 @@ def train_stage(config: TrainingConfig,
                         selective = (w_e > 0.5).float().mean().item()
                         print(f"  Weight selectivity (>0.5): {selective:.3f} (should drop < 0.15)")
                 
+                # Track weight sum reduction
+                if step == 0:
+                    initial_weight = weight_sum
+                    print(f"  Initial weight sum: {initial_weight:.1f}")
+                elif step % 10000 == 0 and step > 0:
+                    reduction = initial_weight / max(weight_sum, 1) if 'initial_weight' in locals() else 1
+                    print(f"  Weight reduction: {reduction:.1f}x (target: >10x by 100k)")
+                
                 # Clear warning about expected behavior
                 if step == 0:
                     print(f"  Expected: raw_adj should start ~0.45 and drop to <0.05")
                 elif raw_adj > 2.0:
-                    print(f"  ERROR: Raw adj > 2 indicates missing /15 normalization!")
-                elif raw_adj > 0.5 and step > 10000:
-                    print(f"  WARNING: Raw adj still high - check gradients are flowing")
+                    print(f"  ERROR: Raw adj > 2 indicates normalization issue!")
+                elif raw_adj > 0.5 and step > 50000:
+                    print(f"  WARNING: Raw adj still high - check beta clamping")
+                elif raw_adj < 0.35 and step > 10000:
+                    print(f"  ✓ PROGRESS: Raw adj dropping (target: 0.25-0.35)")
                 elif raw_adj < 0.05:
-                    print(f"  ✓ GOOD: Raw adj < 0.05 - boundaries are planar!")
+                    print(f"  ✓✓ EXCELLENT: Raw adj < 0.05 - boundaries are planar!")
                     
-                print(f"  Area fractions: {loss_dict['area_fractions'].detach().cpu().numpy()}")
+                # Check area balance
+                area_fracs = loss_dict['area_fractions'].detach().cpu().numpy()
+                max_deviation = np.abs(area_fracs - 1/6).max()
+                if max_deviation > 0.1:
+                    print(f"  ⚠ Area imbalance: max deviation {max_deviation:.3f} from 1/6")
+                    
+                print(f"  Area fractions: {area_fracs}")
     
     return history
 
@@ -397,12 +449,25 @@ def optimize_mesh_segmentation_corrected(vertices: np.ndarray,
             full_history[f'level_{level}'] = history
             
     else:
-        # Direct training on full resolution (CRITICAL FIX: beta to 32)
+        # Direct training - use staged scheduler for better convergence
         steps = iterations if iterations is not None else 300000
+        
+        # CRITICAL: Use staged approach even for direct training
+        # This prevents saturation and ensures proper convergence
+        print("\n" + "="*60)
+        print("Using STAGED scheduler for direct training:")
+        print("  Warm-up (0-3k): β:0→4, λ_adj:0→0")
+        print("  Stage A (3k-50k): β:4→8, λ_adj:0→3")
+        print("  Stage B (50k-120k): β:8→12, λ_adj:3→5")
+        print("  Stage C (120k-200k): β:12→18, λ_adj:5 (hold)")
+        print("  Stage D (200k-300k): β:18→24, λ_adj:5→8")
+        print("="*60)
+        
+        # We'll handle the staging inside train_stage_with_schedule
         config = TrainingConfig(level=0, num_faces=-1, steps=steps,
-                               beta_start=0.0, beta_end=32.0,  # Much sharper: 0->32
-                               lambda_adj_start=0.0, lambda_adj_end=6.0,  # Cap at 6
-                               lr_max=5e-3, lambda_area=1.0)  # Standard area weight
+                               beta_start=0.0, beta_end=24.0,  # Will be staged
+                               lambda_adj_start=0.0, lambda_adj_end=8.0,  # Will be staged
+                               lr_max=5e-3, lambda_area=2.0)  # Increased for better balance
         
         print(f"\n{'='*60}")
         print(f"Direct Training: Full resolution, {config.steps} steps")
