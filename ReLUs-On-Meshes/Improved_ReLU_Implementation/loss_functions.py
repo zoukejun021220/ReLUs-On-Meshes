@@ -1,0 +1,296 @@
+"""
+Revised loss functions for ReLU mesh segmentation.
+Implements the improved formulation from the report.
+"""
+import torch
+import torch.nn.functional as F
+from typing import Dict, Tuple, Optional
+
+
+def compute_pairwise_differences(f_values: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute all pairwise channel differences.
+    
+    Args:
+        f_values: Tensor of shape (V, 6) containing 6-channel field values
+        
+    Returns:
+        d_v: Tensor of shape (V, 15) containing all pairwise differences
+        pairs: Tensor of shape (15, 2) containing channel index pairs
+    """
+    # Generate all pairs (i, j) where i < j
+    pairs = torch.combinations(torch.arange(6, device=f_values.device), r=2)  # (15, 2)
+    
+    # Compute pairwise differences
+    Fi = f_values[:, pairs[:, 0]]  # (V, 15)
+    Fj = f_values[:, pairs[:, 1]]  # (V, 15)
+    d_v = Fi - Fj  # (V, 15)
+    
+    return d_v, pairs
+
+
+def compute_edge_weights(d_v: torch.Tensor, edges: torch.Tensor, beta: float) -> torch.Tensor:
+    """
+    Compute edge weights for boundary detection.
+    
+    Args:
+        d_v: Tensor of shape (V, 15) containing pairwise differences
+        edges: Tensor of shape (E, 2) containing edge vertex indices
+        beta: Temperature parameter for sigmoid
+        
+    Returns:
+        w_e: Tensor of shape (E, 15) containing edge weights
+    """
+    va, vb = edges.T
+    w_e = torch.sigmoid(-beta * d_v[va] * d_v[vb])  # (E, 15)
+    return w_e
+
+
+def compute_face_gradients(f_values: torch.Tensor, faces: torch.Tensor, B: torch.Tensor,
+                          pairs: torch.Tensor) -> torch.Tensor:
+    """
+    Compute gradients of pairwise differences on each face.
+    
+    Args:
+        f_values: Tensor of shape (V, 6) containing field values
+        faces: Tensor of shape (F, 3) containing face vertex indices
+        B: Tensor of shape (F, 3, 3) containing barycentric matrices
+        pairs: Tensor of shape (15, 2) containing channel pairs
+        
+    Returns:
+        grad15: Tensor of shape (F, 3, 15) containing gradients
+    """
+    # Get field values at face vertices
+    Ff = f_values[faces]  # (F, 3, 6)
+    
+    # Compute gradients for all 6 channels
+    grad6 = torch.einsum('fij,fjc->fic', B, Ff)  # (F, 3, 6)
+    
+    # Compute pairwise gradient differences
+    grad15 = grad6[:, :, pairs[:, 0]] - grad6[:, :, pairs[:, 1]]  # (F, 3, 15)
+    
+    return grad15
+
+
+def adjacency_loss(grad15: torch.Tensor, edge2face: torch.Tensor, w_e: torch.Tensor,
+                   lambda_adj: float) -> torch.Tensor:
+    """
+    Compute adjacency loss (revised formulation using local cosine).
+    
+    Args:
+        grad15: Tensor of shape (F, 3, 15) containing face gradients
+        edge2face: Tensor of shape (E, 2) containing face indices per edge
+        w_e: Tensor of shape (E, 15) containing edge weights
+        lambda_adj: Weight for adjacency loss
+        
+    Returns:
+        L_adj: Adjacency loss value
+    """
+    f1, f2 = edge2face.T
+    
+    # Only consider interior edges (both faces valid)
+    mask = (f1 >= 0) & (f2 >= 0)
+    
+    if mask.sum() == 0:
+        return torch.tensor(0.0, device=grad15.device)
+    
+    # Get gradient pairs for interior edges
+    g1 = grad15[f1[mask]]  # (E_interior, 3, 15)
+    g2 = grad15[f2[mask]]  # (E_interior, 3, 15)
+    
+    # Compute cosine similarity
+    dot_prod = (g1 * g2).sum(dim=1)  # (E_interior, 15)
+    norm1 = g1.norm(dim=1) + 1e-10  # (E_interior, 15)
+    norm2 = g2.norm(dim=1) + 1e-10  # (E_interior, 15)
+    cos_theta = dot_prod / (norm1 * norm2)  # (E_interior, 15)
+    
+    # Compute loss: w_e * (1 - cos_theta)
+    L_adj = lambda_adj * (w_e[mask] * (1 - cos_theta)).sum()
+    
+    return L_adj
+
+
+def gated_tv_loss(d_v: torch.Tensor, edges: torch.Tensor, w_e: torch.Tensor,
+                  lambda_tv: float) -> torch.Tensor:
+    """
+    Compute gated total variation loss.
+    
+    Args:
+        d_v: Tensor of shape (V, 15) containing pairwise differences
+        edges: Tensor of shape (E, 2) containing edge vertex indices
+        w_e: Tensor of shape (E, 15) containing edge weights
+        lambda_tv: Weight for TV loss
+        
+    Returns:
+        L_tv: Gated TV loss value
+    """
+    va, vb = edges.T
+    d_i = d_v[va]  # (E, 15)
+    d_j = d_v[vb]  # (E, 15)
+    
+    # Gated TV: (1 - w_e) * (d_i - d_j)^2
+    L_tv = lambda_tv * ((1 - w_e) * (d_i - d_j).pow(2)).sum()
+    
+    return L_tv
+
+
+def area_balance_loss(f_values: torch.Tensor, faces: torch.Tensor, face_areas: torch.Tensor,
+                     beta: float, lambda_area: float) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute area balance loss (L1 deviation from 1/6).
+    
+    Args:
+        f_values: Tensor of shape (V, 6) containing field values
+        faces: Tensor of shape (F, 3) containing face vertex indices
+        face_areas: Tensor of shape (F,) containing face areas
+        beta: Temperature parameter for softmax
+        lambda_area: Weight for area loss
+        
+    Returns:
+        L_area: Area balance loss value
+        frac: Tensor of shape (6,) containing area fractions
+    """
+    # Compute softmax probabilities at vertices
+    Pv = torch.softmax(beta * f_values, dim=1)  # (V, 6)
+    
+    # Average probabilities over face vertices
+    Pf = Pv[faces].mean(dim=1)  # (F, 6)
+    
+    # Compute area-weighted fractions
+    total_area = face_areas.sum()
+    frac = (Pf.T * face_areas).sum(dim=1) / total_area  # (6,)
+    
+    # L1 deviation from uniform distribution
+    L_area = lambda_area * torch.abs(frac - 1/6).sum()
+    
+    return L_area, frac
+
+
+def compute_total_loss(f_values: torch.Tensor,
+                      vertices: torch.Tensor,
+                      faces: torch.Tensor,
+                      edges: torch.Tensor,
+                      edge2face: torch.Tensor,
+                      face_areas: torch.Tensor,
+                      B: torch.Tensor,
+                      beta: float = 10.0,
+                      lambda_area: float = 1.0,
+                      lambda_adj: float = 5.0,
+                      lambda_tv: float = 0.1,
+                      return_components: bool = False) -> Dict[str, torch.Tensor]:
+    """
+    Compute the total loss with all components.
+    
+    Args:
+        f_values: Tensor of shape (V, 6) containing field values
+        vertices: Tensor of shape (V, 3) containing vertex positions
+        faces: Tensor of shape (F, 3) containing face indices
+        edges: Tensor of shape (E, 2) containing edge indices
+        edge2face: Tensor of shape (E, 2) containing face adjacency
+        face_areas: Tensor of shape (F,) containing face areas
+        B: Tensor of shape (F, 3, 3) containing barycentric matrices
+        beta: Temperature parameter
+        lambda_area: Weight for area balance
+        lambda_adj: Weight for adjacency
+        lambda_tv: Weight for TV regularization
+        return_components: If True, return individual loss components
+        
+    Returns:
+        Dictionary containing 'total' loss and optionally individual components
+    """
+    # 1. Compute pairwise differences
+    d_v, pairs = compute_pairwise_differences(f_values)
+    
+    # 2. Compute edge weights
+    w_e = compute_edge_weights(d_v, edges, beta)
+    
+    # 3. Compute face gradients
+    grad15 = compute_face_gradients(f_values, faces, B, pairs)
+    
+    # 4. Compute individual losses
+    L_area, area_frac = area_balance_loss(f_values, faces, face_areas, beta, lambda_area)
+    L_adj = adjacency_loss(grad15, edge2face, w_e, lambda_adj)
+    L_tv = gated_tv_loss(d_v, edges, w_e, lambda_tv)
+    
+    # 5. Total loss
+    total = L_area + L_adj + L_tv
+    
+    result = {'total': total}
+    
+    if return_components:
+        result.update({
+            'area': L_area,
+            'adjacency': L_adj,
+            'tv': L_tv,
+            'area_fractions': area_frac
+        })
+    
+    return result
+
+
+class GradNorm:
+    """
+    GradNorm: Gradient Normalization for Adaptive Loss Balancing.
+    Based on "GradNorm: Gradient Normalization for Adaptive Loss Balancing in Deep Multitask Networks"
+    """
+    def __init__(self, num_tasks: int = 3, alpha: float = 1.5):
+        self.num_tasks = num_tasks
+        self.alpha = alpha
+        self.weights = torch.ones(num_tasks) / num_tasks
+        self.initial_losses = None
+        
+    def update_weights(self, losses: Dict[str, torch.Tensor], shared_params: torch.nn.Parameter):
+        """
+        Update task weights based on gradient magnitudes.
+        
+        Args:
+            losses: Dictionary of individual loss components
+            shared_params: Shared parameters (e.g., f_values)
+        """
+        if self.initial_losses is None:
+            self.initial_losses = {k: v.item() for k, v in losses.items() if k != 'total'}
+            return
+        
+        # Compute gradients for each task
+        grads = []
+        loss_ratios = []
+        
+        for i, (key, loss) in enumerate(losses.items()):
+            if key == 'total':
+                continue
+                
+            # Compute gradient magnitude
+            grad = torch.autograd.grad(loss, shared_params, retain_graph=True)[0]
+            grad_norm = grad.norm()
+            grads.append(grad_norm)
+            
+            # Compute loss ratio
+            ratio = loss.item() / (self.initial_losses[key] + 1e-8)
+            loss_ratios.append(ratio)
+        
+        grads = torch.stack(grads)
+        loss_ratios = torch.tensor(loss_ratios)
+        
+        # Compute mean gradient norm
+        mean_grad = grads.mean()
+        
+        # Compute relative training rates
+        relative_rates = loss_ratios / loss_ratios.mean()
+        
+        # Update weights
+        for i in range(self.num_tasks):
+            target = mean_grad * (relative_rates[i] ** self.alpha)
+            self.weights[i] *= (target / (grads[i] + 1e-8)).item()
+        
+        # Normalize weights
+        self.weights = self.weights / self.weights.sum()
+        
+    def get_weighted_loss(self, losses: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Apply current weights to losses."""
+        weighted_loss = 0
+        i = 0
+        for key, loss in losses.items():
+            if key != 'total' and key != 'area_fractions':
+                weighted_loss += self.weights[i] * loss
+                i += 1
+        return weighted_loss
