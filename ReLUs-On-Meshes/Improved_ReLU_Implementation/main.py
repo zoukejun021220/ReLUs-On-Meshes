@@ -37,6 +37,8 @@ def main():
                        help='Directory to save results')
     parser.add_argument('--device', type=str, default='cuda',
                        help='Device to use (cuda or cpu)')
+    parser.add_argument('--iterations', type=int, default=None,
+                       help='Number of training iterations (overrides default schedule)')
     
     args = parser.parse_args()
     
@@ -81,7 +83,8 @@ def main():
         vertices, faces, pinned_indices,
         use_coarse_to_fine=not args.no_coarse_to_fine,
         use_grad_norm=not args.no_grad_norm,
-        device=device
+        device=device,
+        iterations=args.iterations
     )
     
     elapsed_time = time.time() - start_time

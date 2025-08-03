@@ -188,11 +188,7 @@ def train_stage(config: TrainingConfig,
         'area_fractions': [], 'lr': [], 'beta': [], 'lambda_adj': []
     }
     
-    # Early stopping
-    best_loss = float('inf')
-    patience_counter = 0
-    patience = 5000
-    min_improvement = 0.01  # 1% improvement threshold
+    # No early stopping - train for full iterations
     
     # Training loop
     for step in range(config.steps):
@@ -272,17 +268,6 @@ def train_stage(config: TrainingConfig,
                 history['beta'].append(beta)
                 history['lambda_adj'].append(lambda_adj)
             
-            # Early stopping check
-            if loss.item() < best_loss * (1 - min_improvement):
-                best_loss = loss.item()
-                patience_counter = 0
-            else:
-                patience_counter += 100
-                
-            if patience_counter >= patience:
-                print(f"Early stopping at step {step}")
-                break
-                
             # Print progress
             if step % 1000 == 0:
                 print(f"Step {step}/{config.steps}: Loss={loss.item():.4f}, "
@@ -300,7 +285,8 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
                              num_channels: int = 6,
                              use_coarse_to_fine: bool = True,
                              use_grad_norm: bool = True,
-                             device: Optional[torch.device] = None) -> Tuple[torch.Tensor, Dict]:
+                             device: Optional[torch.device] = None,
+                             iterations: Optional[int] = None) -> Tuple[torch.Tensor, Dict]:
     """
     Main optimization function for mesh segmentation.
     
@@ -312,6 +298,7 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
         use_coarse_to_fine: Whether to use coarse-to-fine schedule
         use_grad_norm: Whether to use GradNorm for loss balancing
         device: Torch device
+        iterations: Optional override for number of training iterations
         
     Returns:
         Optimized field values and training history
@@ -351,6 +338,12 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
         for level in range(3):
             print(f"\n=== Training Level {level} ===")
             config = schedule.get_stage(level)
+            
+            # Override steps if iterations is provided
+            if iterations is not None:
+                # Distribute iterations across levels: 15%, 30%, 55%
+                level_percentages = [0.15, 0.30, 0.55]
+                config.steps = int(iterations * level_percentages[level])
             
             # Debug info
             print(f"f_values shape: {f_values.shape}")
@@ -424,7 +417,8 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
             
     else:
         # Direct training on full resolution
-        config = TrainingConfig(level=0, num_faces=-1, steps=200000,
+        steps = iterations if iterations is not None else 200000
+        config = TrainingConfig(level=0, num_faces=-1, steps=steps,
                                beta_start=2.0, beta_end=25.0,
                                lambda_adj_start=0.0, lambda_adj_end=8.0)
         

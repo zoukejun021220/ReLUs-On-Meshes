@@ -258,7 +258,7 @@ def measure_planarity(vertices: np.ndarray, faces: np.ndarray,
     
     # Compute gradients
     d_v, pairs = compute_pairwise_differences(f_values)
-    B = compute_barycentric_matrices(vertices, faces)
+    B, face_mask = compute_barycentric_matrices(vertices, faces)
     B_torch = torch.tensor(B, dtype=torch.float32, device=f_values.device)
     faces_torch = torch.tensor(faces, dtype=torch.int64, device=f_values.device)
     
