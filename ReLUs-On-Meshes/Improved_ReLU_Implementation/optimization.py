@@ -183,10 +183,19 @@ def train_stage(config: TrainingConfig,
     
     # Training loop
     for step in range(config.steps):
-        # Interpolate parameters
-        progress = step / config.steps
-        beta = schedule.interpolate_param(config.beta_start, config.beta_end, progress)
-        lambda_adj = schedule.interpolate_param(config.lambda_adj_start, config.lambda_adj_end, progress)
+        # Warm-up period for numerical stability
+        warmup_steps = 1000
+        if config.level == 0 and step < warmup_steps:
+            # During warm-up: no boundary forces, no GradNorm
+            beta = 0.0
+            lambda_adj = 0.0
+            use_grad_norm_step = False
+        else:
+            # After warm-up: normal parameter interpolation
+            progress = step / config.steps
+            beta = schedule.interpolate_param(config.beta_start, config.beta_end, progress)
+            lambda_adj = schedule.interpolate_param(config.lambda_adj_start, config.lambda_adj_end, progress)
+            use_grad_norm_step = use_grad_norm
         
         optimizer.zero_grad()
         
@@ -208,7 +217,7 @@ def train_stage(config: TrainingConfig,
             )
         
         # Apply GradNorm if enabled
-        if grad_norm is not None and step > 100:
+        if grad_norm is not None and use_grad_norm_step and step > 100:
             grad_norm.update_weights(loss_dict, f_values)
             loss = grad_norm.get_weighted_loss(loss_dict)
         else:

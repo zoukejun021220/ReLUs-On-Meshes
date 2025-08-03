@@ -76,6 +76,7 @@ def adjacency_loss(grad15: torch.Tensor, edge2face: torch.Tensor, w_e: torch.Ten
                    lambda_adj: float) -> torch.Tensor:
     """
     Compute adjacency loss (revised formulation using local cosine).
+    Numerically stable version with proper masking and clamping.
     
     Args:
         grad15: Tensor of shape (F, 3, 15) containing face gradients
@@ -86,26 +87,48 @@ def adjacency_loss(grad15: torch.Tensor, edge2face: torch.Tensor, w_e: torch.Ten
     Returns:
         L_adj: Adjacency loss value
     """
+    eps = 1e-8
+    clamp_val = 0.999999
+    
     f1, f2 = edge2face.T
     
     # Only consider interior edges (both faces valid)
-    mask = (f1 >= 0) & (f2 >= 0)
+    interior = (f1 >= 0) & (f2 >= 0)
     
-    if mask.sum() == 0:
+    if interior.sum() == 0:
         return torch.tensor(0.0, device=grad15.device)
     
     # Get gradient pairs for interior edges
-    g1 = grad15[f1[mask]]  # (E_interior, 3, 15)
-    g2 = grad15[f2[mask]]  # (E_interior, 3, 15)
+    g1 = grad15[f1[interior]]  # (E_interior, 3, 15)
+    g2 = grad15[f2[interior]]  # (E_interior, 3, 15)
     
-    # Compute cosine similarity
-    dot_prod = (g1 * g2).sum(dim=1)  # (E_interior, 15)
-    norm1 = g1.norm(dim=1) + 1e-10  # (E_interior, 15)
-    norm2 = g2.norm(dim=1) + 1e-10  # (E_interior, 15)
-    cos_theta = dot_prod / (norm1 * norm2)  # (E_interior, 15)
+    # Compute norms
+    n1 = g1.norm(dim=1)  # (E_interior, 15)
+    n2 = g2.norm(dim=1)  # (E_interior, 15)
+    
+    # Mask out edges whose gradients are both ~0
+    valid = (n1 > eps) & (n2 > eps)  # (E_interior, 15)
+    
+    if valid.sum() == 0:
+        return torch.tensor(0.0, device=grad15.device)
+    
+    # Apply valid mask to all tensors
+    g1_valid = g1[valid]  # Flattened valid gradients
+    g2_valid = g2[valid]
+    n1_valid = n1[valid]
+    n2_valid = n2[valid]
+    
+    # Get corresponding weights
+    w_interior = w_e[interior]  # (E_interior, 15)
+    w_valid = w_interior[valid]  # Flattened valid weights
+    
+    # Compute cosine similarity in fp32 for stability
+    dot_prod = (g1_valid * g2_valid).sum(dim=1).float()  # Sum over 3D components
+    cos_theta = dot_prod / (n1_valid * n2_valid).float()
+    cos_theta = cos_theta.clamp(-clamp_val, clamp_val)  # Clamp to (-1, 1)
     
     # Compute loss: w_e * (1 - cos_theta)
-    L_adj = lambda_adj * (w_e[mask] * (1 - cos_theta)).sum()
+    L_adj = lambda_adj * (w_valid * (1.0 - cos_theta)).sum()
     
     return L_adj
 
@@ -114,6 +137,7 @@ def gated_tv_loss(d_v: torch.Tensor, edges: torch.Tensor, w_e: torch.Tensor,
                   lambda_tv: float) -> torch.Tensor:
     """
     Compute gated total variation loss.
+    Numerically stable version with clamping to prevent explosions.
     
     Args:
         d_v: Tensor of shape (V, 15) containing pairwise differences
@@ -124,12 +148,17 @@ def gated_tv_loss(d_v: torch.Tensor, edges: torch.Tensor, w_e: torch.Tensor,
     Returns:
         L_tv: Gated TV loss value
     """
+    tv_clip = 1e3  # Clamp large differences to prevent inf
+    
     va, vb = edges.T
     d_i = d_v[va]  # (E, 15)
     d_j = d_v[vb]  # (E, 15)
     
-    # Gated TV: (1 - w_e) * (d_i - d_j)^2
-    L_tv = lambda_tv * ((1 - w_e) * (d_i - d_j).pow(2)).sum()
+    # Compute squared differences with clamping
+    diff_squared = (d_i - d_j).pow(2).clamp(max=tv_clip)
+    
+    # Gated TV: (1 - w_e) * clamped_diff^2
+    L_tv = lambda_tv * ((1 - w_e) * diff_squared).sum()
     
     return L_tv
 
