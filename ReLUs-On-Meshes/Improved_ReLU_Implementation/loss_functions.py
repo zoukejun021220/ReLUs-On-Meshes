@@ -112,23 +112,19 @@ def adjacency_loss(grad15: torch.Tensor, edge2face: torch.Tensor, w_e: torch.Ten
     if valid.sum() == 0:
         return torch.tensor(0.0, device=grad15.device)
     
-    # Apply valid mask to all tensors
-    g1_valid = g1[valid]  # Flattened valid gradients
-    g2_valid = g2[valid]
-    n1_valid = n1[valid]
-    n2_valid = n2[valid]
+    # Compute dot product and cosine similarity for all edges
+    dot_prod = (g1 * g2).sum(dim=1)  # (E_interior, 15)
+    
+    # Compute cosine similarity in fp32 for stability
+    cos_theta = (dot_prod / (n1 * n2 + 1e-10)).float()
+    cos_theta = cos_theta.clamp(-clamp_val, clamp_val)  # Clamp to (-1, 1)
     
     # Get corresponding weights
     w_interior = w_e[interior]  # (E_interior, 15)
-    w_valid = w_interior[valid]  # Flattened valid weights
     
-    # Compute cosine similarity in fp32 for stability
-    dot_prod = (g1_valid * g2_valid).sum(dim=1).float()  # Sum over 3D components
-    cos_theta = dot_prod / (n1_valid * n2_valid).float()
-    cos_theta = cos_theta.clamp(-clamp_val, clamp_val)  # Clamp to (-1, 1)
-    
-    # Compute loss: w_e * (1 - cos_theta)
-    L_adj = lambda_adj * (w_valid * (1.0 - cos_theta)).sum()
+    # Apply valid mask and compute loss
+    valid_contribution = valid.float() * w_interior * (1.0 - cos_theta)
+    L_adj = lambda_adj * valid_contribution.sum()
     
     return L_adj
 
