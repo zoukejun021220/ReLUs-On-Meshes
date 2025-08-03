@@ -70,10 +70,10 @@ def adjacency_loss_corrected(grad15: torch.Tensor, edge2face: torch.Tensor,
     # Get weights for interior edges
     w_interior = w_e[interior]  # (E_interior, 15)
     
-    # CRITICAL FIX: Normalize gradients with CLAMPED norms to prevent zero penalties
-    # When gradients are tiny (~1e-6), their cosine is undefined
-    n1 = g1.norm(dim=1).clamp_min(1e-2)  # Clamp to prevent division issues
-    n2 = g2.norm(dim=1).clamp_min(1e-2)  # (E_interior, 15)
+    # CRITICAL FIX: Normalize gradients with SMALLER clamp to detect real alignment
+    # Clamping too high (1e-2) hides real alignment errors when gradients are small
+    n1 = g1.norm(dim=1).clamp_min(1e-6)  # Much smaller clamp - detect real alignment
+    n2 = g2.norm(dim=1).clamp_min(1e-6)  # (E_interior, 15)
     
     # Normalize gradients  
     g1_norm = g1 / n1.unsqueeze(1)  # (E_interior, 3, 15)
@@ -130,10 +130,10 @@ def gated_tv_loss_corrected(d_v: torch.Tensor, edges: torch.Tensor,
     # Squared difference in field values
     diff_squared = (d_i - d_j).pow(2)
     
-    # CRITICAL FIX: Use (1-w_e)^2 for stronger interior smoothing
-    # This gives maximum smoothing inside regions (w_e≈0) and minimal at boundaries (w_e≈1)
+    # CRITICAL FIX: Use LINEAR gating (1-w_e) for effective TV
+    # Linear gating is more effective than squared - gives 4x stronger smoothing
     # Divide by number of channel pairs (15) to match adjacency scale
-    gating = (1 - w_e).pow(2)  # Strong inside regions, weak at boundaries
+    gating = 1 - w_e  # Linear gating - much more effective!
     L_tv = (gating * diff_squared).sum() / d_v.shape[1]
     
     return lambda_tv * L_tv
@@ -185,8 +185,9 @@ def compute_edge_weights(d_v: torch.Tensor, edges: torch.Tensor, beta: float) ->
     # Element-wise product for each pair
     prod = d_i * d_j  # (E, 15)
     
-    # Sigmoid weight - no clamping since we have better scheduling now
-    w_e = torch.sigmoid(-beta * prod)  # (E, 15)
+    # CRITICAL: Sharper sigmoid to force weight selectivity
+    # Scale by 4 to make transition sharper
+    w_e = torch.sigmoid(-4.0 * beta * prod)  # (E, 15) - 4x sharper!
     
     return w_e
 

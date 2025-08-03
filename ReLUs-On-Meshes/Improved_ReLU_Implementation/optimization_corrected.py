@@ -150,16 +150,16 @@ def train_stage(config: TrainingConfig,
                 progress = step / 3000
                 beta = 0.0 + 4.0 * progress
                 lambda_adj = 0.0  # No adjacency during warm-up
-                lambda_tv = 0.02  # Reduced TV
+                lambda_tv = 0.5  # CRITICAL: Strong TV from start
             elif step < 50000:  # Stage A
                 progress = (step - 3000) / (50000 - 3000)
                 beta = 4.0 + 4.0 * progress  # 4→8
-                # CRITICAL: Only activate lambda_adj if boundaries are forming
+                # CRITICAL: Start adjacency at 0.5 when activated
                 if lambda_adj_activated:
-                    lambda_adj = 0.0 + 3.0 * progress  # 0→3
+                    lambda_adj = 0.5 + 2.5 * progress  # 0.5→3
                 else:
-                    lambda_adj = 0.0  # Keep at 0 until boundaries form
-                lambda_tv = 0.02
+                    lambda_adj = 0.0  # Keep at 0 until beta >= 4
+                lambda_tv = 0.5  # Strong TV
             elif step < 120000:  # Stage B
                 progress = (step - 50000) / (120000 - 50000)
                 beta = 8.0 + 4.0 * progress  # 8→12
@@ -167,20 +167,20 @@ def train_stage(config: TrainingConfig,
                     lambda_adj = 3.0 + 2.0 * progress  # 3→5
                 else:
                     lambda_adj = 0.0
-                lambda_tv = 0.02
+                lambda_tv = 0.5  # Strong TV
             elif step < 200000:  # Stage C
                 progress = (step - 120000) / (200000 - 120000)
                 beta = 12.0 + 6.0 * progress  # 12→18
                 lambda_adj = 5.0 if lambda_adj_activated else 0.0
-                lambda_tv = 0.05  # Increase TV
-            else:  # Stage D
+                lambda_tv = 0.5  # Keep strong TV
+            else:  # Stage D - CRITICAL: Much higher beta to force boundaries
                 progress = (step - 200000) / (300000 - 200000)
-                beta = 18.0 + 6.0 * progress  # 18→24
+                beta = 18.0 + 62.0 * progress  # 18→80 (was 18→24)
                 if lambda_adj_activated:
                     lambda_adj = 5.0 + 3.0 * progress  # 5→8
                 else:
                     lambda_adj = 0.0
-                lambda_tv = 0.05
+                lambda_tv = 0.5  # Keep strong TV
         else:
             # Original scheduling for shorter runs
             progress = step / config.steps
@@ -231,30 +231,28 @@ def train_stage(config: TrainingConfig,
         # Learning rate update
         lr_scheduler.step()
         
-        # CRITICAL FIX: Hard freeze anchors for first 10k steps, then soft pinning
+        # CRITICAL FIX: Stronger pinning for first 30k steps
         if step < 10000:
             # Hard pinning - directly set values
             with torch.no_grad():
                 for i, idx in enumerate(pinned_indices):
                     f_values[idx] = pinned_values[i]
+        elif step < 30000:
+            # Strong soft pinning for steps 10k-30k
+            soft_pinning(f_values, pinned_indices, pinned_values, decay_rate=0.95)
         else:
-            # Soft pinning after 10k steps
-            soft_pinning(f_values, pinned_indices, pinned_values, decay_rate=0.995)
+            # Weaker soft pinning after 30k steps
+            soft_pinning(f_values, pinned_indices, pinned_values, decay_rate=0.99)
         
         # Record history
         if step % 100 == 0:
             with torch.no_grad():
                 raw_adj = loss_dict.get('raw_adj_normalized', 0).item()
                 
-                # CRITICAL: Check if boundaries are forming
-                if not lambda_adj_activated and 'weight_sum' in loss_dict:
-                    w_e = loss_dict.get('weight_sum')
-                    if isinstance(w_e, torch.Tensor):
-                        w_e_max = w_e.max().item() if w_e.numel() > 1 else 0
-                        # Activate lambda_adj only when boundaries start forming
-                        if w_e_max > 0.9 or beta >= 3.0:
-                            lambda_adj_activated = True
-                            print(f"\n>>> ACTIVATING lambda_adj at step {step} (w_e.max={w_e_max:.3f}, β={beta:.1f})")
+                # CRITICAL: Activate adjacency earlier to help form boundaries
+                if not lambda_adj_activated and beta >= 4.0:
+                    lambda_adj_activated = True
+                    print(f"\n>>> ACTIVATING lambda_adj at step {step} (β={beta:.1f} >= 4.0)")
                 
                 # Freeze lambda_adj if raw_adj drops below threshold
                 if not lambda_adj_frozen and raw_adj < 0.15 and lambda_adj > 0:
@@ -501,14 +499,14 @@ def optimize_mesh_segmentation_corrected(vertices: np.ndarray,
         print("  Stage A (3k-50k): β:4→8, λ_adj:0→3")
         print("  Stage B (50k-120k): β:8→12, λ_adj:3→5")
         print("  Stage C (120k-200k): β:12→18, λ_adj:5 (hold)")
-        print("  Stage D (200k-300k): β:18→24, λ_adj:5→8")
+        print("  Stage D (200k-300k): β:18→80, λ_adj:5→8")
         print("="*60)
         
         # We'll handle the staging inside train_stage_with_schedule
         config = TrainingConfig(level=0, num_faces=-1, steps=steps,
-                               beta_start=0.0, beta_end=24.0,  # Will be staged
+                               beta_start=0.0, beta_end=80.0,  # CRITICAL: Much higher beta
                                lambda_adj_start=0.0, lambda_adj_end=8.0,  # Will be staged
-                               lr_max=5e-3, lambda_area=5.0)  # CRITICAL: Strong area constraint
+                               lr_max=5e-3, lambda_area=5.0, lambda_tv=0.5)  # Strong TV and area
         
         print(f"\n{'='*60}")
         print(f"Direct Training: Full resolution, {config.steps} steps")
