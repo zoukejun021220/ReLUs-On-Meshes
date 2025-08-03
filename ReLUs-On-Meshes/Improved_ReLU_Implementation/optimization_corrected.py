@@ -135,7 +135,12 @@ def train_stage(config: TrainingConfig,
         # Parameter scheduling
         progress = step / config.steps
         beta = schedule.interpolate_param(config.beta_start, config.beta_end, progress)
-        lambda_adj = schedule.interpolate_param(config.lambda_adj_start, config.lambda_adj_end, progress)
+        
+        # CRITICAL: Keep lambda_adj = 0 until beta >= 2 to avoid gradient explosion
+        if beta < 2.0:
+            lambda_adj = 0.0
+        else:
+            lambda_adj = schedule.interpolate_param(config.lambda_adj_start, config.lambda_adj_end, progress)
         
         optimizer.zero_grad()
         

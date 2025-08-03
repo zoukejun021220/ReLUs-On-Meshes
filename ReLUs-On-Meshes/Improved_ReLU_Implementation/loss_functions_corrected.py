@@ -85,17 +85,21 @@ def adjacency_loss_corrected(grad15: torch.Tensor, edge2face: torch.Tensor,
         dot_prod = (g1_pair * g2_pair).sum(dim=1)  # (E_interior,)
         cos_sim = dot_prod / (n1 * n2 + 1e-10)
         
-        # Linear penalty: (1 - cos)
-        penalty = 1.0 - cos_sim
+        # CRITICAL: Clamp cosine to prevent -inf
+        cos_sim = torch.clamp(cos_sim, -1.0 + 1e-6, 1.0 - 1e-6)
         
-        # Weight and accumulate
+        # Linear penalty: (1 - cos) with ReLU to ensure non-negative
+        penalty = torch.relu(1.0 - cos_sim)
+        
+        # Additional safety: replace any inf/nan with 2.0 (max penalty)
+        penalty = torch.where(torch.isfinite(penalty), penalty, penalty.new_tensor(2.0))
+        
+        # CRITICAL: Normalize per pair, not globally
+        total_weight_pair = w_interior[:, pair].sum().clamp_min(1e-8)
         weighted_penalty = w_interior[:, pair] * penalty
-        L_adj += weighted_penalty.sum()
+        L_adj += weighted_penalty.sum() / total_weight_pair
     
-    # Normalize by sum of weights (critical!)
-    total_weight = w_e.sum().clamp_min(1e-8)
-    L_adj = L_adj / total_weight
-    
+    # Already normalized per pair above
     return lambda_adj * L_adj
 
 
@@ -115,7 +119,8 @@ def gated_tv_loss_corrected(d_v: torch.Tensor, edges: torch.Tensor,
     
     # CORRECTED: Use soft complement (1 - w_e)
     # This gives smooth transition from 1 inside regions to 0 at boundaries
-    L_tv = ((1 - w_e) * diff_squared).sum()
+    # Divide by number of channel pairs (15) to match adjacency scale
+    L_tv = ((1 - w_e) * diff_squared).sum() / d_v.shape[1]
     
     return lambda_tv * L_tv
 
@@ -193,8 +198,13 @@ def compute_total_loss_corrected(f_values: torch.Tensor,
     pairs = torch.tensor(list(itertools.combinations(range(6), 2)))
     
     # 1. Compute pairwise differences
-    from loss_functions import compute_pairwise_differences
-    d_v, _ = compute_pairwise_differences(f_values)
+    # Inline implementation to avoid import issues
+    num_channels = f_values.shape[1]
+    d_v = []
+    for i in range(num_channels):
+        for j in range(i+1, num_channels):
+            d_v.append(f_values[:, i] - f_values[:, j])
+    d_v = torch.stack(d_v, dim=1)  # (V, 15)
     
     # 2. Compute edge weights (NO THRESHOLD)
     w_e = compute_edge_weights(d_v, edges, beta)
