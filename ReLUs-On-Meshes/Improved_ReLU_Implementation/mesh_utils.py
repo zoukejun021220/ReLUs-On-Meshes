@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import pyvista as pv
 import trimesh
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Dict
 from sklearn.decomposition import PCA
 
 
@@ -343,6 +343,35 @@ def compute_mesh_adjacency(faces: np.ndarray) -> Tuple[np.ndarray, np.ndarray, n
     return (np.array(edges, dtype=np.int64),
             np.array(edge2face, dtype=np.int64),
             np.array(face_adjacency, dtype=np.int64))
+
+
+def compute_mesh_data(vertices: np.ndarray, faces: np.ndarray) -> Dict:
+    """
+    Compute all mesh data needed for optimization.
+    
+    Returns a dictionary with:
+    - edges: Edge connectivity
+    - edge2face: Edge to face adjacency
+    - face_areas: Area of each face
+    - B: Barycentric gradient matrices
+    - face_mask: Valid (non-degenerate) faces
+    """
+    # Get adjacency
+    edges, edge2face, _ = compute_mesh_adjacency(faces)
+    
+    # Get face areas
+    face_areas = compute_face_areas(vertices, faces)
+    
+    # Get barycentric matrices and face mask
+    B, face_mask = compute_barycentric_matrices(vertices, faces)
+    
+    return {
+        'edges': edges,
+        'edge2face': edge2face,
+        'face_areas': face_areas,
+        'B': B,
+        'face_mask': face_mask
+    }
 
 
 def compute_face_areas(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
