@@ -210,7 +210,7 @@ def train_stage(config: TrainingConfig,
                 history['area'].append(loss_dict['area'].item())
                 history['adjacency'].append(loss_dict['adjacency'].item())
                 history['tv'].append(loss_dict['tv'].item())
-                history['area_fractions'].append(loss_dict['area_fractions'].cpu().numpy())
+                history['area_fractions'].append(loss_dict['area_fractions'].detach().cpu().numpy())
                 history['lr'].append(optimizer.param_groups[0]['lr'])
                 history['beta'].append(beta)
                 history['lambda_adj'].append(lambda_adj)
@@ -233,7 +233,7 @@ def train_stage(config: TrainingConfig,
                         'weight_sum': loss_dict.get('weight_sum', 0).item(),
                         'beta': beta,
                         'lambda_adj': lambda_adj,
-                        'area_fractions': loss_dict['area_fractions'].cpu().numpy()
+                        'area_fractions': loss_dict['area_fractions'].detach().cpu().numpy()
                     },
                     'config': config.__dict__
                 }
