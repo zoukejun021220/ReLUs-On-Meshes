@@ -35,13 +35,13 @@ class CoarseToFineSchedule:
         self.stages = [
             TrainingConfig(level=0, num_faces=3000, steps=30000,
                          beta_start=2.0, beta_end=10.0,
-                         lambda_adj_start=0.0, lambda_adj_end=5.0),
+                         lambda_adj_start=0.0, lambda_adj_end=3.0),  # Reduced from 5.0
             TrainingConfig(level=1, num_faces=12000, steps=60000,
                          beta_start=10.0, beta_end=10.0,
-                         lambda_adj_start=5.0, lambda_adj_end=5.0),
+                         lambda_adj_start=3.0, lambda_adj_end=3.0),  # Reduced from 5.0
             TrainingConfig(level=2, num_faces=-1, steps=120000,  # -1 means full resolution
                          beta_start=10.0, beta_end=25.0,
-                         lambda_adj_start=5.0, lambda_adj_end=8.0),
+                         lambda_adj_start=3.0, lambda_adj_end=4.0),  # Reduced from 5.0/8.0
         ]
         
     def get_stage(self, level: int) -> TrainingConfig:
@@ -101,15 +101,26 @@ def downsample_mesh(vertices: np.ndarray, faces: np.ndarray,
     
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
     
-    # Simplify mesh
-    simplified = mesh.simplify_quadric_decimation(face_count=target_faces)
-    
-    # Find mapping from simplified to original vertices
-    from scipy.spatial import cKDTree
-    tree = cKDTree(vertices)
-    _, vertex_mapping = tree.query(simplified.vertices)
-    
-    return simplified.vertices, simplified.faces, vertex_mapping
+    # Check if trimesh version supports return_mapping
+    try:
+        # Try modern trimesh API (>= 4.1.0)
+        simplified, orig_index = mesh.simplify_quadric_decimation(
+            face_count=target_faces, return_mapping=True)
+        # orig_index is already a valid subset of [0, ..., V-1]
+        return simplified.vertices, simplified.faces, orig_index
+    except TypeError:
+        # Fallback for older trimesh versions
+        simplified = mesh.simplify_quadric_decimation(face_count=target_faces)
+        
+        # Find mapping from simplified to original vertices
+        from scipy.spatial import cKDTree
+        tree = cKDTree(vertices)
+        _, vertex_mapping = tree.query(simplified.vertices)
+        
+        # Clip indices to prevent out of bounds
+        vertex_mapping = np.minimum(vertex_mapping, len(vertices) - 1).astype(np.int64)
+        
+        return simplified.vertices, simplified.faces, vertex_mapping
 
 
 def soft_pinning(f_values: torch.Tensor, pinned_indices: List[int], 
@@ -184,7 +195,7 @@ def train_stage(config: TrainingConfig,
     # Training loop
     for step in range(config.steps):
         # Warm-up period for numerical stability
-        warmup_steps = 1000
+        warmup_steps = 1500  # Increased from 1000 for dragon mesh
         if config.level == 0 and step < warmup_steps:
             # During warm-up: no boundary forces, no GradNorm
             beta = 0.0
@@ -194,8 +205,14 @@ def train_stage(config: TrainingConfig,
             # After warm-up: normal parameter interpolation
             progress = step / config.steps
             beta = schedule.interpolate_param(config.beta_start, config.beta_end, progress)
-            lambda_adj = schedule.interpolate_param(config.lambda_adj_start, config.lambda_adj_end, progress)
-            use_grad_norm_step = use_grad_norm
+            # Start lambda_adj from 0 after warm-up
+            if config.level == 0:
+                adj_progress = max(0, (step - warmup_steps) / (config.steps - warmup_steps))
+                lambda_adj = schedule.interpolate_param(0.0, config.lambda_adj_end, adj_progress)
+            else:
+                lambda_adj = schedule.interpolate_param(config.lambda_adj_start, config.lambda_adj_end, progress)
+            # Only use GradNorm when beta > 2.0 to avoid division by zero
+            use_grad_norm_step = use_grad_norm and beta > 2.0
         
         optimizer.zero_grad()
         

@@ -144,7 +144,7 @@ def gated_tv_loss(d_v: torch.Tensor, edges: torch.Tensor, w_e: torch.Tensor,
     Returns:
         L_tv: Gated TV loss value
     """
-    tv_clip = 1e3  # Clamp large differences to prevent inf
+    tv_clip = 2e2  # Reduced from 1e3 for better stability
     
     va, vb = edges.T
     d_i = d_v[va]  # (E, 15)
@@ -303,12 +303,19 @@ class GradNorm:
         # Compute relative training rates
         relative_rates = loss_ratios / loss_ratios.mean()
         
-        # Update weights
+        # Update weights with safe division
         for i in range(self.num_tasks):
             target = mean_grad * (relative_rates[i] ** self.alpha)
-            self.weights[i] *= (target / (grads[i] + 1e-8)).item()
+            # Avoid division by zero with safe scaling
+            safe = grads[i] > 1e-12
+            if safe:
+                scale = (target / grads[i].clamp(min=1e-12)).item()
+            else:
+                scale = 1.0
+            self.weights[i] *= scale
         
-        # Normalize weights
+        # Handle NaN/inf and normalize weights
+        self.weights = torch.nan_to_num(self.weights, nan=1.0/self.num_tasks, posinf=1.0, neginf=1.0)
         self.weights = self.weights / self.weights.sum()
         
     def get_weighted_loss(self, losses: Dict[str, torch.Tensor]) -> torch.Tensor:
