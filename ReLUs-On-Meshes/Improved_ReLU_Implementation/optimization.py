@@ -10,7 +10,8 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional
 import time
 from dataclasses import dataclass
-from loss_functions import compute_total_loss, GradNorm
+from loss_functions import GradNorm
+from loss_functions_corrected import compute_total_loss_corrected as compute_total_loss
 
 
 @dataclass
@@ -34,17 +35,17 @@ class CoarseToFineSchedule:
     def __init__(self):
         self.stages = [
             TrainingConfig(level=0, num_faces=3000, steps=30000,
-                         beta_start=2.0, beta_end=10.0,
-                         lambda_adj_start=0.0, lambda_adj_end=0.5,
-                         lr_max=1e-3),  # Lower LR for initial stage
+                         beta_start=0.0, beta_end=10.0,  # Start from 0 as per paper
+                         lambda_adj_start=0.0, lambda_adj_end=5.0,  # 0->5 as per paper
+                         lr_max=5e-3),  # Standard LR
             TrainingConfig(level=1, num_faces=12000, steps=60000,
-                         beta_start=10.0, beta_end=10.0,
-                         lambda_adj_start=0.5, lambda_adj_end=0.5,
-                         lr_max=5e-4),  # Even lower for middle stage
+                         beta_start=10.0, beta_end=15.0,
+                         lambda_adj_start=5.0, lambda_adj_end=5.0,  # Stay at 5
+                         lr_max=5e-3),  
             TrainingConfig(level=2, num_faces=-1, steps=120000,  # -1 means full resolution
-                         beta_start=10.0, beta_end=25.0,
-                         lambda_adj_start=0.5, lambda_adj_end=1.0,
-                         lr_max=2e-4),  # Lowest for final stage
+                         beta_start=15.0, beta_end=25.0,  # End at 25 as per paper
+                         lambda_adj_start=5.0, lambda_adj_end=8.0,  # 5->8 as per paper
+                         lr_max=5e-3),  
         ]
         
     def get_stage(self, level: int) -> TrainingConfig:
@@ -279,12 +280,14 @@ def train_stage(config: TrainingConfig,
                       f"Adj={loss_dict['adjacency'].item():.4f}, "
                       f"TV={loss_dict['tv'].item():.4f}")
                 
-                # Show raw losses (before weighting) - use the normalized raw for adjacency
+                # Show raw losses and weight sum
                 raw_area = loss_dict['area'].item() / config.lambda_area if config.lambda_area > 0 else 0
                 raw_adj = loss_dict.get('raw_adj_normalized', loss_dict['adjacency'] / lambda_adj if lambda_adj > 0 else 0).item()
                 raw_tv = loss_dict['tv'].item() / config.lambda_tv if config.lambda_tv > 0 else 0
-                print(f"  Raw normalized: Area={raw_area:.4f}, Adj={raw_adj:.4f}, TV={raw_tv:.4f}")
-                print(f"  Weights: λ_area={config.lambda_area}, λ_adj={lambda_adj:.2f}, λ_tv={config.lambda_tv}")
+                weight_sum = loss_dict.get('weight_sum', 0).item() if 'weight_sum' in loss_dict else 0
+                print(f"  Raw: Area={raw_area:.4f}, Adj={raw_adj:.4f}, TV={raw_tv:.4f}")
+                print(f"  Weights: λ_area={config.lambda_area}, λ_adj={lambda_adj:.2f}, λ_tv={config.lambda_tv}, β={beta:.1f}")
+                print(f"  Weight sum (w_e): {weight_sum:.1f}")  # This should drop from ~10000 to ~100
                 print(f"  Area fractions: {loss_dict['area_fractions'].detach().cpu().numpy()}")
     
     return history
@@ -430,9 +433,9 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
         # Direct training on full resolution
         steps = iterations if iterations is not None else 200000
         config = TrainingConfig(level=0, num_faces=-1, steps=steps,
-                               beta_start=2.0, beta_end=25.0,
-                               lambda_adj_start=0.0, lambda_adj_end=1.0,  # Fixed: was 8.0, way too high for normalized loss
-                               lr_max=5e-3)  # Increased: was too low at 5e-4
+                               beta_start=0.0, beta_end=25.0,  # Full range 0->25
+                               lambda_adj_start=0.0, lambda_adj_end=8.0,  # Full range 0->8 as per paper
+                               lr_max=5e-3)
         
         mesh_data = {
             'vertices': vertices_torch,
