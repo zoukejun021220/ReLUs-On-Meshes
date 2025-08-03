@@ -26,10 +26,10 @@ from contour_alignment_improved import (
     compute_contour_loss
 )
 from improved_loss_v2 import (
-    improved_loss_function,
     get_beta_schedule,
     get_lambda_schedule
 )
+from improved_loss_v2_fast import improved_loss_function_fast
 
 # ============================================================================================
 # IMPROVED LOSS FUNCTIONS WITH NUMERICAL STABILITY
@@ -337,18 +337,9 @@ def optimize_relu_mesh(
     loss_reweighter = DynamicLossReweighter() if use_dynamic_reweighting else None
     
     # Build triangle adjacency for new loss
-    from scipy.sparse import csr_matrix
-    rows, cols = [], []
-    for i, adj in enumerate(tri_adj):
-        for j in adj:
-            if j >= 0:
-                rows.append(i)
-                cols.append(j)
-    triangle_adjacency = csr_matrix(
-        (np.ones(len(rows)), (rows, cols)), 
-        shape=(len(faces), len(faces))
-    ).to_dense()
-    triangle_adjacency = torch.from_numpy(triangle_adjacency).float().to(device)
+    # Note: For very large meshes (>50k faces), the dense adjacency matrix would be too large
+    # The improved_loss_v2 expects a sparse matrix, but tri_adj already contains the adjacency info
+    print(f"Mesh has {len(faces)} faces - using efficient adjacency representation")
     
     # Training history
     history = []
@@ -378,13 +369,12 @@ def optimize_relu_mesh(
         # Forward pass
         optimizer.zero_grad()
         
-        # Compute new improved loss
-        total_loss, loss_components = improved_loss_function(
+        # Compute new improved loss using ultra-fast version
+        total_loss, loss_components = improved_loss_function_fast(
             points=v,
             triangles=f,
             f_values=f_values,
             edges=vert_edges,
-            triangle_adjacency=triangle_adjacency,
             beta=beta,
             lambda_area=lambda_area,
             lambda_adj=lambda_adj,
@@ -424,14 +414,17 @@ def optimize_relu_mesh(
         # Logging
         if it % print_every == 0 or it == 1:
             grad_stats = grad_monitor.get_stats()
+            elapsed_time = time.time() - t0
+            iter_per_sec = it / elapsed_time
+            eta_seconds = (n_iters - it) / iter_per_sec if iter_per_sec > 0 else 0
             
-            print(f"\nIter {it:6d}/{n_iters}")
-            print(f"  Total loss: {total_loss.item():.3e} (best: {best_loss:.3e} @ iter {best_iter})")
-            print(f"  Components: area={loss_components['area']:.3e}, adj={loss_components['adjacent']:.3e}, TV={loss_components['tv']:.3e}")
-            print(f"  Schedules: β={beta:.1f}, λ_adj={lambda_adj:.2f}, LR mult={lr_mult:.2f}")
-            print(f"  Grad norms: {grad_norms}")
+            print(f"\n[Iter {it:6d}/{n_iters}] Time: {elapsed_time/60:.1f}min, Speed: {iter_per_sec:.1f} it/s, ETA: {eta_seconds/60:.1f}min")
+            print(f"  Loss: {total_loss.item():.3e} (best: {best_loss:.3e} @ iter {best_iter})")
+            print(f"  - Area: {loss_components['area']:.3e} | Adj: {loss_components['adjacent']:.3e} | TV: {loss_components['tv']:.3e}")
+            print(f"  Params: β={beta:.1f}, λ_adj={lambda_adj:.2f}, LR={lr_vertex * lr_mult:.4f}")
+            print(f"  Grads: f_values={grad_norms['total']:.2e}, offsets={grad_norms['offsets']:.2e}")
             print(f"  Area fractions: {loss_components['area_fractions']}")
-            print(f"  Mean boundary weight: {loss_components['mean_boundary_weight']:.3f}")
+            print(f"  Boundary weight: {loss_components['mean_boundary_weight']:.3f}")
             
             # Store history
             history.append({
@@ -453,7 +446,17 @@ def optimize_relu_mesh(
             break
     
     # Save results
-    print(f"\nOptimization completed in {(time.time() - t0) / 60:.1f} minutes")
+    total_time = time.time() - t0
+    print(f"\n{'='*60}")
+    print(f"OPTIMIZATION COMPLETED")
+    print(f"{'='*60}")
+    print(f"Total time: {total_time/60:.1f} minutes ({total_time:.1f} seconds)")
+    print(f"Total iterations: {it}")
+    print(f"Average speed: {it/total_time:.1f} iterations/second")
+    print(f"Best loss: {best_loss:.3e} (achieved at iteration {best_iter})")
+    print(f"Final loss: {total_loss.item():.3e}")
+    print(f"Improvement: {(history[0]['total_loss'] - best_loss) / history[0]['total_loss'] * 100:.1f}%")
+    print(f"{'='*60}")
     
     results = {
         'vertices': vertices,

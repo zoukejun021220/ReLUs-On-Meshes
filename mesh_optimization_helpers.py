@@ -39,13 +39,27 @@ def build_triangle_adjacency(faces: np.ndarray) -> np.ndarray:
         for edge in edges:
             edge_to_tris[edge].append(t_idx)
     
-    # Build adjacency pairs
-    adjacency = []
+    # Build adjacency list for each triangle
+    num_triangles = len(faces)
+    adjacency_list = [[] for _ in range(num_triangles)]
+    
     for edge, tris in edge_to_tris.items():
         if len(tris) == 2:
-            adjacency.append(tris)
+            t0, t1 = tris
+            adjacency_list[t0].append(t1)
+            adjacency_list[t1].append(t0)
     
-    return np.array(adjacency)
+    # Convert to fixed-size array (pad with -1)
+    max_neighbors = max(len(adj) for adj in adjacency_list) if adjacency_list else 0
+    if max_neighbors == 0:
+        max_neighbors = 3  # At least 3 for triangular meshes
+    
+    adjacency_array = np.full((num_triangles, max_neighbors), -1, dtype=np.int32)
+    for i, adj in enumerate(adjacency_list):
+        if adj:
+            adjacency_array[i, :len(adj)] = adj
+    
+    return adjacency_array
 
 
 def build_vertex_edges(faces: np.ndarray) -> np.ndarray:
