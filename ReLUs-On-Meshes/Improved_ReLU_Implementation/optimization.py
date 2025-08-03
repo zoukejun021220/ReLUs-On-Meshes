@@ -345,32 +345,29 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
     full_history = {}
     
     if use_coarse_to_fine:
-        # Coarse-to-fine training
+        # Coarse-to-fine training - always work with original mesh
         for level in range(3):
             print(f"\n=== Training Level {level} ===")
             config = schedule.get_stage(level)
             
             # Debug info
-            print(f"Current f_values shape: {f_values.shape}")
-            print(f"Number of vertices: {len(vertices)}")
+            print(f"f_values shape: {f_values.shape}")
+            print(f"Original mesh: {len(vertices)} vertices, {len(faces)} faces")
             
             # Prepare mesh for this level
             if config.num_faces > 0 and config.num_faces < len(faces):
-                # Downsample mesh
+                # Always downsample from original mesh
                 coarse_vertices, coarse_faces, vertex_mapping = downsample_mesh(
                     vertices, faces, config.num_faces
                 )
                 
-                # Map field values to coarse mesh with bounds checking
-                # Ensure vertex_mapping is within bounds
+                # Ensure mapping is valid
                 vertex_mapping = np.array(vertex_mapping, dtype=np.int64)
-                max_idx = len(vertices) - 1
-                if vertex_mapping.max() > max_idx:
-                    print(f"Warning: vertex_mapping has out-of-bounds indices. Max index: {vertex_mapping.max()}, should be <= {max_idx}")
-                    vertex_mapping = np.clip(vertex_mapping, 0, max_idx)
+                print(f"Coarse mesh has {len(coarse_vertices)} vertices")
+                print(f"Vertex mapping shape: {vertex_mapping.shape}, range: [{vertex_mapping.min()}, {vertex_mapping.max()}]")
                 
-                # Convert to tensor and index
-                vertex_mapping_tensor = torch.from_numpy(vertex_mapping).to(device)
+                # Create coarse f_values by sampling from full f_values
+                vertex_mapping_tensor = torch.from_numpy(vertex_mapping).long().to(device)
                 coarse_f_values = nn.Parameter(f_values[vertex_mapping_tensor].clone())
                 
                 # Map pinned indices
@@ -399,7 +396,11 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
                 
                 # Interpolate back to fine mesh
                 with torch.no_grad():
-                    f_values.data = coarse_f_values[vertex_mapping].data
+                    # We need to map from coarse vertices back to original vertices
+                    # vertex_mapping[i] tells us which original vertex corresponds to coarse vertex i
+                    # So we need to assign f_values[vertex_mapping[i]] = coarse_f_values[i]
+                    for i in range(len(vertex_mapping)):
+                        f_values.data[vertex_mapping[i]] = coarse_f_values.data[i]
                     
             else:
                 # Train on full resolution
