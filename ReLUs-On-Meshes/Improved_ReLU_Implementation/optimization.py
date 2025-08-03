@@ -260,7 +260,7 @@ def train_stage(config: TrainingConfig,
                       f"Area={loss_dict['area'].item():.4f}, "
                       f"Adj={loss_dict['adjacency'].item():.4f}, "
                       f"TV={loss_dict['tv'].item():.4f}")
-                print(f"Area fractions: {loss_dict['area_fractions'].cpu().numpy()}")
+                print(f"Area fractions: {loss_dict['area_fractions'].detach().cpu().numpy()}")
     
     return history
 
