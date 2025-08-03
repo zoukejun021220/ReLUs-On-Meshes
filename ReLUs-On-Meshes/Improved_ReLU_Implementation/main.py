@@ -102,11 +102,13 @@ def main():
         'history': history
     }, output_dir / f'{mesh_name}_results.pt')
     
-    # Save as numpy for compatibility
+    # Save as numpy for compatibility with visualizeMesh
+    field_values_np = f_values.cpu().numpy()
     np.savez(output_dir / f'{mesh_name}_mesh_and_values.npz',
              vertices=vertices,
              faces=faces,
-             f_values=f_values.cpu().numpy(),
+             f_values=field_values_np,  # Keep for backward compatibility
+             field_values=field_values_np,  # Required by visualizeMesh/visual.py
              pinned_indices=pinned_indices)
     
     # Measure planarity
