@@ -100,10 +100,14 @@ def adjacency_loss_corrected(grad15: torch.Tensor, edge2face: torch.Tensor,
     normalized_losses = pair_losses / weight_sums  # (15,)
     
     # Total adjacency loss is sum over all pairs
-    L_adj = normalized_losses.sum()
+    L_adj_raw = normalized_losses.sum()
     
-    # Already normalized per pair above
-    return lambda_adj * L_adj
+    # Return both weighted and raw for monitoring
+    if lambda_adj == 0:
+        # Still return the raw value for monitoring
+        return torch.tensor(0.0, device=grad15.device), L_adj_raw
+    else:
+        return lambda_adj * L_adj_raw, L_adj_raw
 
 
 def gated_tv_loss_corrected(d_v: torch.Tensor, edges: torch.Tensor, 
@@ -221,7 +225,15 @@ def compute_total_loss_corrected(f_values: torch.Tensor,
     
     # 4. Compute individual losses (all corrected)
     L_area, area_frac = area_balance_loss_corrected(f_values, faces, face_areas, face_mask, beta, lambda_area)
-    L_adj = adjacency_loss_corrected(grad15, edge2face, w_e, face_mask, lambda_adj)
+    L_adj_result = adjacency_loss_corrected(grad15, edge2face, w_e, face_mask, lambda_adj)
+    
+    # Handle the tuple return from adjacency_loss_corrected
+    if isinstance(L_adj_result, tuple):
+        L_adj, L_adj_raw = L_adj_result
+    else:
+        L_adj = L_adj_result
+        L_adj_raw = L_adj / lambda_adj if lambda_adj > 0 else torch.tensor(0.0)
+    
     L_tv = gated_tv_loss_corrected(d_v, edges, w_e, lambda_tv)
     
     # 5. Total loss
@@ -232,7 +244,6 @@ def compute_total_loss_corrected(f_values: torch.Tensor,
     if return_components:
         # For monitoring
         weight_sum = w_e.sum()
-        raw_adj = L_adj / lambda_adj if lambda_adj > 0 else torch.tensor(0.0)
         
         result.update({
             'area': L_area,
@@ -240,7 +251,7 @@ def compute_total_loss_corrected(f_values: torch.Tensor,
             'tv': L_tv,
             'area_fractions': area_frac,
             'weight_sum': weight_sum,  # Monitor this - should drop by 2 orders of magnitude
-            'raw_adj_normalized': raw_adj
+            'raw_adj_normalized': L_adj_raw  # This is the actual raw adjacency value
         })
     
     return result

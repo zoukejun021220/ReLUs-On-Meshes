@@ -202,7 +202,7 @@ def train_stage(config: TrainingConfig,
                       f"TV={loss_dict['tv'].item():.4f}")
                 
                 # Show important metrics
-                raw_adj = loss_dict['adjacency'].item() / lambda_adj if lambda_adj > 0 else 0
+                raw_adj = loss_dict.get('raw_adj_normalized', torch.tensor(0.0)).item()
                 weight_sum = loss_dict.get('weight_sum', 0).item()
                 print(f"  Raw adj: {raw_adj:.4f}, Weight sum: {weight_sum:.1f}")
                 print(f"  β={beta:.1f}, λ_adj={lambda_adj:.2f}, λ_tv={config.lambda_tv}")
