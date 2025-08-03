@@ -97,16 +97,16 @@ def adjacency_loss_corrected(grad15: torch.Tensor, edge2face: torch.Tensor,
     max_penalty = 0.5 if use_squared else 2.0
     penalty = torch.where(torch.isfinite(penalty), penalty, penalty.new_tensor(max_penalty))
     
-    # CRITICAL FIX: Per-edge normalization (not per-pair!)
-    # Each edge contributes its own normalized loss
+    # CRITICAL FIX: NO per-edge normalization - it gives tiny-weight edges equal say!
+    # Just weight by w_e and normalize by total weight
     edge_losses = w_interior * penalty  # (E_interior, 15)
     
-    # Normalize EACH EDGE separately
-    edge_weights = w_interior.sum(dim=1, keepdim=True).clamp_min(1e-6)  # (E_interior, 1)
-    normalized_edge_losses = edge_losses.sum(dim=1) / edge_weights.squeeze()  # (E_interior,)
+    # Sum all losses and normalize by total weight
+    total_loss = edge_losses.sum()
+    total_weight = w_interior.sum().clamp_min(1e-6)
     
-    # Average over all edges, then average over pairs
-    L_adj_raw = normalized_edge_losses.mean()  # Average over edges
+    # Normalized adjacency loss
+    L_adj_raw = total_loss / total_weight
     
     # Return both weighted and raw for monitoring
     if lambda_adj == 0:
@@ -132,9 +132,11 @@ def gated_tv_loss_corrected(d_v: torch.Tensor, edges: torch.Tensor,
     
     # CRITICAL FIX: Use LINEAR gating (1-w_e) for effective TV
     # Linear gating is more effective than squared - gives 4x stronger smoothing
-    # Divide by number of channel pairs (15) to match adjacency scale
+    # Scale by both number of edges and channel pairs for mesh independence
     gating = 1 - w_e  # Linear gating - much more effective!
-    L_tv = (gating * diff_squared).sum() / d_v.shape[1]
+    num_edges = edges.shape[0]
+    num_pairs = d_v.shape[1]  # 15
+    L_tv = (gating * diff_squared).sum() / (num_edges * num_pairs)
     
     return lambda_tv * L_tv
 
@@ -172,11 +174,11 @@ def area_balance_loss_corrected(f_values: torch.Tensor, faces: torch.Tensor,
     return L_area, frac
 
 
-def compute_edge_weights(d_v: torch.Tensor, edges: torch.Tensor, beta: float) -> torch.Tensor:
+def compute_edge_weights(d_v: torch.Tensor, edges: torch.Tensor, beta: float, gamma: float = 1.0) -> torch.Tensor:
     """
-    Compute edge weights using sigmoid with CLAMPED beta to prevent saturation.
+    Compute edge weights using sigmoid with power gamma to force saturation.
     
-    CRITICAL: Clamp beta to prevent saturation that kills gradients!
+    CRITICAL: Use gamma > 1 to force w_e to become binary!
     """
     va, vb = edges.T
     d_i = d_v[va]  # (E, 15)
@@ -185,9 +187,13 @@ def compute_edge_weights(d_v: torch.Tensor, edges: torch.Tensor, beta: float) ->
     # Element-wise product for each pair
     prod = d_i * d_j  # (E, 15)
     
-    # CRITICAL: Sharper sigmoid to force weight selectivity
-    # Scale by 4 to make transition sharper
-    w_e = torch.sigmoid(-4.0 * beta * prod)  # (E, 15) - 4x sharper!
+    # CRITICAL: Power gamma forces saturation to 0/1
+    # Base sigmoid (removed 4x scaling since we use gamma now)
+    w_e = torch.sigmoid(-beta * prod)  # (E, 15)
+    
+    # Apply power to force saturation when gamma > 1
+    if gamma > 1.0:
+        w_e = w_e.pow(gamma)
     
     return w_e
 
@@ -204,6 +210,7 @@ def compute_total_loss_corrected(f_values: torch.Tensor,
                                 lambda_area: float = 1.0,
                                 lambda_adj: float = 5.0,
                                 lambda_tv: float = 0.1,
+                                gamma: float = 1.0,
                                 return_components: bool = False) -> Dict[str, torch.Tensor]:
     """
     Compute total loss with all CORRECTED components.
@@ -225,8 +232,8 @@ def compute_total_loss_corrected(f_values: torch.Tensor,
     # Vectorized computation of all pairwise differences
     d_v = f_values[:, idx_i] - f_values[:, idx_j]  # (V, 15)
     
-    # 2. Compute edge weights (NO THRESHOLD)
-    w_e = compute_edge_weights(d_v, edges, beta)
+    # 2. Compute edge weights with gamma for saturation
+    w_e = compute_edge_weights(d_v, edges, beta, gamma)
     
     # 3. Compute face gradients (RAW, not normalized)
     grad15 = compute_face_gradients(f_values, faces, B, pairs)

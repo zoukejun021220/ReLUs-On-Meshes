@@ -137,6 +137,7 @@ def train_stage(config: TrainingConfig,
     lambda_adj_frozen = False
     lambda_adj_frozen_value = 5.0
     lambda_adj_activated = False  # Track when to start using lambda_adj
+    raw_adj_history = []  # Track history for plateau detection
     
     # Checkpoint tracking
     checkpoint_steps = [100, 500, 1000, 5000, 10000, 20000, 50000, 100000, 200000]
@@ -144,43 +145,45 @@ def train_stage(config: TrainingConfig,
     
     # Training loop
     for step in range(config.steps):
-        # CRITICAL: Staged parameter scheduling to prevent saturation
+        # CRITICAL: New schedule with gamma and delayed adjacency
         if config.steps >= 300000:  # Use staged schedule for long runs
-            if step < 3000:  # Warm-up
-                progress = step / 3000
-                beta = 0.0 + 4.0 * progress
-                lambda_adj = 0.0  # No adjacency during warm-up
-                lambda_tv = 0.5  # CRITICAL: Strong TV from start
-            elif step < 50000:  # Stage A
-                progress = (step - 3000) / (50000 - 3000)
-                beta = 4.0 + 4.0 * progress  # 4→8
-                # CRITICAL: Start adjacency at 0.5 when activated
-                if lambda_adj_activated:
-                    lambda_adj = 0.5 + 2.5 * progress  # 0.5→3
-                else:
-                    lambda_adj = 0.0  # Keep at 0 until beta >= 4
+            if step < 2000:  # Warm-up
+                progress = step / 2000
+                beta = 0.0 + 2.0 * progress  # 0→2
+                gamma = 1.0  # No power during warm-up
+                lambda_adj = 0.0  # No adjacency
                 lambda_tv = 0.5  # Strong TV
-            elif step < 120000:  # Stage B
-                progress = (step - 50000) / (120000 - 50000)
-                beta = 8.0 + 4.0 * progress  # 8→12
+                lambda_area = 5.0
+            elif step < 30000:  # TV consolidation
+                progress = (step - 2000) / (30000 - 2000)
+                beta = 2.0 + 6.0 * progress  # 2→8
+                gamma = 3.0  # CRITICAL: Power to force saturation
+                lambda_adj = 0.0  # Still no adjacency - let TV work alone
+                lambda_tv = 0.5
+                lambda_area = 5.0
+            elif step < 120000:  # Boundary shaping
+                progress = (step - 30000) / (120000 - 30000)
+                beta = 8.0 + 10.0 * progress  # 8→18
+                gamma = 3.0
+                # Only activate adjacency if enough edges are saturated
                 if lambda_adj_activated:
-                    lambda_adj = 3.0 + 2.0 * progress  # 3→5
+                    lambda_adj = 5.0  # Full adjacency
                 else:
                     lambda_adj = 0.0
-                lambda_tv = 0.5  # Strong TV
-            elif step < 200000:  # Stage C
-                progress = (step - 120000) / (200000 - 120000)
-                beta = 12.0 + 6.0 * progress  # 12→18
-                lambda_adj = 5.0 if lambda_adj_activated else 0.0
-                lambda_tv = 0.5  # Keep strong TV
-            else:  # Stage D - CRITICAL: Much higher beta to force boundaries
-                progress = (step - 200000) / (300000 - 200000)
-                beta = 18.0 + 62.0 * progress  # 18→80 (was 18→24)
-                if lambda_adj_activated:
-                    lambda_adj = 5.0 + 3.0 * progress  # 5→8
+                lambda_tv = 0.05  # Reduce TV
+                lambda_area = 5.0
+            else:  # Fine tuning
+                progress = (step - 120000) / (300000 - 120000)
+                beta = 18.0 + 12.0 * progress  # 18→30
+                gamma = 3.0
+                if lambda_adj_activated and not lambda_adj_frozen:
+                    lambda_adj = 5.0
+                elif lambda_adj_frozen:
+                    lambda_adj = lambda_adj_frozen_value
                 else:
                     lambda_adj = 0.0
-                lambda_tv = 0.5  # Keep strong TV
+                lambda_tv = 0.02  # Minimal TV
+                lambda_area = 1.0  # Reduce area
         else:
             # Original scheduling for shorter runs
             progress = step / config.steps
@@ -194,6 +197,8 @@ def train_stage(config: TrainingConfig,
                 lambda_adj = schedule.interpolate_param(config.lambda_adj_start, config.lambda_adj_end, progress)
             
             lambda_tv = config.lambda_tv * max(0.1, 10.0 / beta) if beta > 10 else config.lambda_tv
+            gamma = 1.0  # Default gamma for short runs
+            lambda_area = config.lambda_area
         
         optimizer.zero_grad()
         
@@ -209,9 +214,10 @@ def train_stage(config: TrainingConfig,
                 mesh_data['B'],
                 face_mask=mesh_data.get('face_mask', None),
                 beta=beta,
-                lambda_area=config.lambda_area,
+                lambda_area=lambda_area,  # Use scheduled area weight
                 lambda_adj=lambda_adj,
-                lambda_tv=lambda_tv,  # Use decayed TV
+                lambda_tv=lambda_tv,  # Use scheduled TV
+                gamma=gamma,  # Pass gamma for saturation
                 return_components=True
             )
         
@@ -249,16 +255,28 @@ def train_stage(config: TrainingConfig,
             with torch.no_grad():
                 raw_adj = loss_dict.get('raw_adj_normalized', 0).item()
                 
-                # CRITICAL: Activate adjacency earlier to help form boundaries
-                if not lambda_adj_activated and beta >= 4.0:
-                    lambda_adj_activated = True
-                    print(f"\n>>> ACTIVATING lambda_adj at step {step} (β={beta:.1f} >= 4.0)")
+                # CRITICAL: Activate adjacency only when enough edges are saturated
+                if not lambda_adj_activated and step > 20000:
+                    # Check if enough edges have w_e > 0.9 (saturated)
+                    if 'weight_sum' in loss_dict:
+                        w_e = loss_dict.get('weight_sum')
+                        if isinstance(w_e, torch.Tensor) and w_e.numel() > 1:
+                            saturated_ratio = (w_e > 0.9).float().mean().item()
+                            if saturated_ratio > 0.1:  # 10% of edges saturated
+                                lambda_adj_activated = True
+                                print(f"\n>>> ACTIVATING lambda_adj at step {step} ({saturated_ratio:.1%} edges saturated)")
                 
-                # Freeze lambda_adj if raw_adj drops below threshold
-                if not lambda_adj_frozen and raw_adj < 0.15 and lambda_adj > 0:
-                    lambda_adj_frozen = True
-                    lambda_adj_frozen_value = lambda_adj
-                    print(f"\n>>> Freezing lambda_adj at {lambda_adj:.2f} (raw_adj={raw_adj:.4f} < 0.15)")
+                # Track raw_adj history
+                raw_adj_history.append(raw_adj)
+                
+                # CRITICAL: Freeze lambda_adj based on plateau, not threshold
+                if not lambda_adj_frozen and step > 20000 and len(raw_adj_history) > 50:
+                    # Check if raw_adj has plateaued (change < 0.005 over last 50 records)
+                    recent_change = abs(raw_adj_history[-1] - raw_adj_history[-50])
+                    if recent_change < 0.005 and lambda_adj > 0:
+                        lambda_adj_frozen = True
+                        lambda_adj_frozen_value = lambda_adj
+                        print(f"\n>>> Freezing lambda_adj at {lambda_adj:.2f} (plateau detected, change={recent_change:.4f})")
                 
                 history['loss'].append(loss.item())
                 history['area'].append(loss_dict['area'].item())
@@ -457,6 +475,10 @@ def optimize_mesh_segmentation_corrected(vertices: np.ndarray,
     
     # Initialize field values
     f_values = nn.Parameter(torch.randn(len(vertices), num_channels, device=device) * 0.1)
+    
+    # CRITICAL: Amplify fields to push sigmoid into steep region
+    with torch.no_grad():
+        f_values.mul_(4.0)  # 4x amplification
     
     schedule = CoarseToFineSchedule()
     full_history = {}
