@@ -201,11 +201,24 @@ def train_stage(config: TrainingConfig,
                       f"Adj={loss_dict['adjacency'].item():.4f}, "
                       f"TV={loss_dict['tv'].item():.4f}")
                 
-                # Show important metrics
-                raw_adj = loss_dict.get('raw_adj_normalized', torch.tensor(0.0)).item()
+                # Show important metrics - ensure we get the RIGHT raw value
+                if 'raw_adj_normalized' in loss_dict:
+                    raw_adj = loss_dict['raw_adj_normalized'].item()
+                else:
+                    # Fallback: compute from weighted loss
+                    raw_adj = loss_dict['adjacency'].item() / lambda_adj if lambda_adj > 0 else 0
+                    
                 weight_sum = loss_dict.get('weight_sum', 0).item()
-                print(f"  Raw adj: {raw_adj:.4f}, Weight sum: {weight_sum:.1f}")
-                print(f"  β={beta:.1f}, λ_adj={lambda_adj:.2f}, λ_tv={config.lambda_tv}")
+                
+                # Clear output showing both values
+                print(f"  Raw adj (normalized): {raw_adj:.4f} (should be in [0,2])")
+                print(f"  Weighted adj (λ*norm): {loss_dict['adjacency'].item():.4f}")
+                print(f"  Weight sum: {weight_sum:.1f}, β={beta:.1f}, λ_adj={lambda_adj:.2f}")
+                
+                # Diagnostic: if raw > 2, we're printing the wrong value
+                if raw_adj > 2.0:
+                    print(f"  WARNING: Raw adj > 2 means we're showing weighted, not normalized!")
+                    
                 print(f"  Area fractions: {loss_dict['area_fractions'].detach().cpu().numpy()}")
     
     return history

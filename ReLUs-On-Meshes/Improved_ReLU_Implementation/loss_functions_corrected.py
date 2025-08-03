@@ -39,7 +39,7 @@ def compute_face_gradients(f_values: torch.Tensor, faces: torch.Tensor,
 
 def adjacency_loss_corrected(grad15: torch.Tensor, edge2face: torch.Tensor, 
                             w_e: torch.Tensor, face_mask: Optional[torch.Tensor], 
-                            lambda_adj: float) -> torch.Tensor:
+                            lambda_adj: float, use_squared: bool = False) -> torch.Tensor:
     """
     CORRECTED adjacency loss following the paper exactly.
     
@@ -84,11 +84,17 @@ def adjacency_loss_corrected(grad15: torch.Tensor, edge2face: torch.Tensor,
     # CRITICAL: Clamp cosine to prevent -inf
     cos_sim = torch.clamp(cos_sim, -1.0 + 1e-6, 1.0 - 1e-6)
     
-    # Linear penalty: (1 - cos) with ReLU to ensure non-negative
+    # Penalty: (1 - cos) with optional squaring for better convergence
     penalty = torch.relu(1.0 - cos_sim)  # (E_interior, 15)
     
-    # Additional safety: replace any inf/nan with 2.0 (max penalty)
-    penalty = torch.where(torch.isfinite(penalty), penalty, penalty.new_tensor(2.0))
+    if use_squared:
+        # Squared penalty for stronger gradients near convergence
+        # Divide by 4 to keep same scale as linear version
+        penalty = penalty.pow(2) / 4.0
+    
+    # Additional safety: replace any inf/nan with max penalty
+    max_penalty = 0.5 if use_squared else 2.0
+    penalty = torch.where(torch.isfinite(penalty), penalty, penalty.new_tensor(max_penalty))
     
     # VECTORIZED: Normalize each pair independently
     # Compute weighted penalties
@@ -225,7 +231,10 @@ def compute_total_loss_corrected(f_values: torch.Tensor,
     
     # 4. Compute individual losses (all corrected)
     L_area, area_frac = area_balance_loss_corrected(f_values, faces, face_areas, face_mask, beta, lambda_area)
-    L_adj_result = adjacency_loss_corrected(grad15, edge2face, w_e, face_mask, lambda_adj)
+    
+    # Use squared penalty when beta is large enough (boundaries are well-defined)
+    use_squared = beta > 10.0
+    L_adj_result = adjacency_loss_corrected(grad15, edge2face, w_e, face_mask, lambda_adj, use_squared=use_squared)
     
     # Handle the tuple return from adjacency_loss_corrected
     if isinstance(L_adj_result, tuple):
