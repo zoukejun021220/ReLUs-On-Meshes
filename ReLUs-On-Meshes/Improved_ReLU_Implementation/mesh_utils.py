@@ -32,25 +32,66 @@ def load_mesh_from_vtk(file_path: str, clean_mesh: bool = True) -> Tuple[np.ndar
     surface_mesh = surface_mesh.triangulate()
     
     if clean_mesh:
-        # Remove degenerate triangles (area < 1e-10 × mean area)
-        areas = surface_mesh.compute_cell_sizes().cell_data['Area']
-        area_threshold = areas.mean() * 1e-10
-        mask = areas > area_threshold
-        degenerate_count = (~mask).sum()
-        surface_mesh = surface_mesh.extract_cells(mask)
+        try:
+            # Remove degenerate triangles (area < 1e-10 × mean area)
+            areas = surface_mesh.compute_cell_sizes().cell_data['Area']
+            area_threshold = areas.mean() * 1e-10
+            mask = areas > area_threshold
+            degenerate_count = (~mask).sum()
+            
+            if degenerate_count > 0:
+                surface_mesh = surface_mesh.extract_cells(mask)
+                print(f"Removed {degenerate_count} degenerate faces")
+            
+            # Merge duplicate vertices and remove zero-length edges
+            original_points = surface_mesh.n_points
+            surface_mesh = surface_mesh.clean(tolerance=1e-12)
+            merged_points = original_points - surface_mesh.n_points
+            
+            if merged_points > 0:
+                print(f"Merged {merged_points} duplicate vertices")
+        except Exception as e:
+            print(f"Warning: Mesh cleaning failed: {e}")
+            print("Proceeding with uncleaned mesh")
         
-        # Merge duplicate vertices and remove zero-length edges
-        original_points = surface_mesh.n_points
-        surface_mesh = surface_mesh.clean(tolerance=1e-12)
-        merged_points = original_points - surface_mesh.n_points
-        
-        if degenerate_count > 0 or merged_points > 0:
-            print(f"Mesh cleaning: removed {degenerate_count} degenerate faces, merged {merged_points} duplicate vertices")
         print(f"Final mesh: {surface_mesh.n_points} vertices, {surface_mesh.n_cells} faces")
     
-    # Extract faces and vertices
-    faces_array = surface_mesh.faces.reshape(-1, 4)[:, 1:]  # shape: (num_faces, 3)
-    vertices_np = surface_mesh.points  # shape: (N, 3)
+    # Extract vertices
+    vertices_np = np.array(surface_mesh.points)  # shape: (N, 3)
+    
+    # Extract faces - handle different PyVista versions and face formats
+    try:
+        # Try the standard way first
+        if hasattr(surface_mesh, 'faces') and surface_mesh.faces is not None:
+            # PyVista stores faces as [n_verts, v0, v1, ..., vn, n_verts, ...]
+            # For triangulated meshes, this is [3, v0, v1, v2, 3, v0, v1, v2, ...]
+            faces = surface_mesh.faces
+            
+            # Check if it's already in the right format
+            if len(faces.shape) == 1:
+                # Flatten format - need to parse
+                faces_array = faces.reshape(-1, 4)[:, 1:]  # Skip the '3' prefix
+            else:
+                # Already in 2D format
+                faces_array = faces
+        else:
+            # Fallback: manually extract faces
+            faces_list = []
+            for i in range(surface_mesh.n_cells):
+                cell = surface_mesh.get_cell(i)
+                faces_list.append(cell.point_ids)
+            faces_array = np.array(faces_list, dtype=np.int32)
+            
+    except Exception as e:
+        print(f"Warning: Face extraction encountered issue: {e}")
+        # Last resort: try to extract faces using cell connectivity
+        faces_array = np.zeros((surface_mesh.n_cells, 3), dtype=np.int32)
+        for i in range(surface_mesh.n_cells):
+            try:
+                cell_pts = surface_mesh.get_cell(i).point_ids
+                faces_array[i] = cell_pts[:3]  # Take first 3 points
+            except:
+                pass
     
     return vertices_np, faces_array
 
