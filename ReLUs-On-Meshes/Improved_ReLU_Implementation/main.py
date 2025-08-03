@@ -119,7 +119,9 @@ def main():
     print(f"  Max boundary angle: {planarity['max_angle']:.2f}°")
     print(f"  Number of boundary edges: {planarity['num_boundary_edges']}")
     
-    # Save metrics
+    # Save metrics with proper type conversion
+    from json_serialization_fix import convert_to_serializable
+    
     metrics = {
         'mesh_name': mesh_name,
         'num_vertices': len(vertices),
@@ -130,8 +132,11 @@ def main():
         'final_loss': history[list(history.keys())[-1]]['loss'][-1] if history else None
     }
     
+    # Convert NumPy/PyTorch types to JSON-serializable types
+    safe_metrics = convert_to_serializable(metrics)
+    
     with open(output_dir / f'{mesh_name}_metrics.json', 'w') as f:
-        json.dump(metrics, f, indent=2)
+        json.dump(safe_metrics, f, indent=2)
     
     # Visualizations
     print("\nGenerating visualizations...")
@@ -205,9 +210,10 @@ def run_experiments():
                     'error': str(e)
                 })
     
-    # Save experiment summary
+    # Save experiment summary with proper type conversion
+    safe_results = convert_to_serializable(results)
     with open('experiment_results.json', 'w') as f:
-        json.dump(results, f, indent=2)
+        json.dump(safe_results, f, indent=2)
 
 
 if __name__ == '__main__':
