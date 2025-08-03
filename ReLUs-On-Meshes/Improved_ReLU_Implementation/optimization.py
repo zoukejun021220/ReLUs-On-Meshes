@@ -10,8 +10,7 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional
 import time
 from dataclasses import dataclass
-from loss_functions import GradNorm
-from loss_functions_corrected import compute_total_loss_corrected as compute_total_loss
+from loss_functions import compute_total_loss, GradNorm
 
 
 @dataclass
