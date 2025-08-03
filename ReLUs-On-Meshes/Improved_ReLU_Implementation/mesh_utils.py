@@ -10,12 +10,13 @@ from typing import Tuple, Optional, List
 from sklearn.decomposition import PCA
 
 
-def load_mesh_from_vtk(file_path: str) -> Tuple[np.ndarray, np.ndarray]:
+def load_mesh_from_vtk(file_path: str, clean_mesh: bool = True) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Load a VTK/VTU file and extract the boundary surface.
+    Load a VTK/VTU file and extract the boundary surface with optional cleaning.
     
     Args:
         file_path: Path to the VTK/VTU file
+        clean_mesh: If True, remove degenerate triangles and merge duplicates
         
     Returns:
         vertices_np: Array of shape (N, 3) containing surface vertex coordinates
@@ -29,6 +30,23 @@ def load_mesh_from_vtk(file_path: str) -> Tuple[np.ndarray, np.ndarray]:
     
     # Triangulate (ensures only triangular cells)
     surface_mesh = surface_mesh.triangulate()
+    
+    if clean_mesh:
+        # Remove degenerate triangles (area < 1e-10 × mean area)
+        areas = surface_mesh.compute_cell_sizes().cell_data['Area']
+        area_threshold = areas.mean() * 1e-10
+        mask = areas > area_threshold
+        degenerate_count = (~mask).sum()
+        surface_mesh = surface_mesh.extract_cells(mask)
+        
+        # Merge duplicate vertices and remove zero-length edges
+        original_points = surface_mesh.n_points
+        surface_mesh = surface_mesh.clean(tolerance=1e-12)
+        merged_points = original_points - surface_mesh.n_points
+        
+        if degenerate_count > 0 or merged_points > 0:
+            print(f"Mesh cleaning: removed {degenerate_count} degenerate faces, merged {merged_points} duplicate vertices")
+        print(f"Final mesh: {surface_mesh.n_points} vertices, {surface_mesh.n_cells} faces")
     
     # Extract faces and vertices
     faces_array = surface_mesh.faces.reshape(-1, 4)[:, 1:]  # shape: (num_faces, 3)

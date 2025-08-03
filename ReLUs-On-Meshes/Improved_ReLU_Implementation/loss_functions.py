@@ -73,7 +73,7 @@ def compute_face_gradients(f_values: torch.Tensor, faces: torch.Tensor, B: torch
 
 
 def adjacency_loss(grad15: torch.Tensor, edge2face: torch.Tensor, w_e: torch.Tensor,
-                   lambda_adj: float) -> torch.Tensor:
+                   face_mask: Optional[torch.Tensor], lambda_adj: float) -> torch.Tensor:
     """
     Compute adjacency loss (revised formulation using local cosine).
     Numerically stable version with proper masking and clamping.
@@ -94,6 +94,13 @@ def adjacency_loss(grad15: torch.Tensor, edge2face: torch.Tensor, w_e: torch.Ten
     
     # Only consider interior edges (both faces valid)
     interior = (f1 >= 0) & (f2 >= 0)
+    
+    # Also filter out edges adjacent to degenerate faces
+    if face_mask is not None:
+        # Check if either face is degenerate
+        deg1 = (f1 >= 0) & (~face_mask[f1])
+        deg2 = (f2 >= 0) & (~face_mask[f2])
+        interior = interior & ~(deg1 | deg2)
     
     if interior.sum() == 0:
         return torch.tensor(0.0, device=grad15.device)
@@ -179,7 +186,7 @@ def gated_tv_loss(d_v: torch.Tensor, edges: torch.Tensor, w_e: torch.Tensor,
 
 
 def area_balance_loss(f_values: torch.Tensor, faces: torch.Tensor, face_areas: torch.Tensor,
-                     beta: float, lambda_area: float) -> Tuple[torch.Tensor, torch.Tensor]:
+                     face_mask: Optional[torch.Tensor], beta: float, lambda_area: float) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute area balance loss (L1 deviation from 1/6).
     
@@ -200,9 +207,16 @@ def area_balance_loss(f_values: torch.Tensor, faces: torch.Tensor, face_areas: t
     # Average probabilities over face vertices
     Pf = Pv[faces].mean(dim=1)  # (F, 6)
     
+    # Filter out degenerate faces if mask is provided
+    if face_mask is not None:
+        Pf = Pf[face_mask]
+        face_areas_valid = face_areas[face_mask]
+    else:
+        face_areas_valid = face_areas
+    
     # Compute area-weighted fractions
-    total_area = face_areas.sum()
-    frac = (Pf.T * face_areas).sum(dim=1) / total_area  # (6,)
+    total_area = face_areas_valid.sum()
+    frac = (Pf.T * face_areas_valid).sum(dim=1) / total_area  # (6,)
     
     # L1 deviation from uniform distribution
     L_area = lambda_area * torch.abs(frac - 1/6).sum()
@@ -253,8 +267,8 @@ def compute_total_loss(f_values: torch.Tensor,
     grad15 = compute_face_gradients(f_values, faces, B, pairs)
     
     # 4. Compute individual losses
-    L_area, area_frac = area_balance_loss(f_values, faces, face_areas, beta, lambda_area)
-    L_adj = adjacency_loss(grad15, edge2face, w_e, lambda_adj)
+    L_area, area_frac = area_balance_loss(f_values, faces, face_areas, face_mask, beta, lambda_area)
+    L_adj = adjacency_loss(grad15, edge2face, w_e, face_mask, lambda_adj)
     L_tv = gated_tv_loss(d_v, edges, w_e, edge2face, face_mask, lambda_tv)
     
     # 5. Total loss
