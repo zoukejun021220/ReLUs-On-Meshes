@@ -171,7 +171,7 @@ def gated_tv_loss(d_v: torch.Tensor, edges: torch.Tensor, w_e: torch.Tensor,
     Returns:
         L_tv: Gated TV loss value
     """
-    tv_clip = 2e2  # Reduced from 1e3 for better stability
+    tv_clip = 10.0  # Much lower clip to prevent TV explosion
     
     # Filter edges - ignore if either adjacent face is degenerate
     if face_mask is not None:
