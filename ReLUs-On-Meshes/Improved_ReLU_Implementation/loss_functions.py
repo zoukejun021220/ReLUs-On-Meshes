@@ -248,7 +248,8 @@ class GradNorm:
             shared_params: Shared parameters (e.g., f_values)
         """
         if self.initial_losses is None:
-            self.initial_losses = {k: v.item() for k, v in losses.items() if k != 'total'}
+            self.initial_losses = {k: v.item() for k, v in losses.items() 
+                                 if k not in ['total', 'area_fractions']}
             return
         
         # Compute gradients for each task
@@ -256,7 +257,7 @@ class GradNorm:
         loss_ratios = []
         
         for i, (key, loss) in enumerate(losses.items()):
-            if key == 'total':
+            if key in ['total', 'area_fractions']:
                 continue
                 
             # Compute gradient magnitude
