@@ -35,13 +35,13 @@ class CoarseToFineSchedule:
         self.stages = [
             TrainingConfig(level=0, num_faces=3000, steps=30000,
                          beta_start=2.0, beta_end=10.0,
-                         lambda_adj_start=0.0, lambda_adj_end=3.0),  # Reduced from 5.0
+                         lambda_adj_start=0.0, lambda_adj_end=0.5),  # Normalized: much smaller values
             TrainingConfig(level=1, num_faces=12000, steps=60000,
                          beta_start=10.0, beta_end=10.0,
-                         lambda_adj_start=3.0, lambda_adj_end=3.0),  # Reduced from 5.0
+                         lambda_adj_start=0.5, lambda_adj_end=0.5),  # Normalized: much smaller values
             TrainingConfig(level=2, num_faces=-1, steps=120000,  # -1 means full resolution
                          beta_start=10.0, beta_end=25.0,
-                         lambda_adj_start=3.0, lambda_adj_end=4.0),  # Reduced from 5.0/8.0
+                         lambda_adj_start=0.5, lambda_adj_end=1.0),  # Normalized: much smaller values
         ]
         
     def get_stage(self, level: int) -> TrainingConfig:

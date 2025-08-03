@@ -131,7 +131,15 @@ def adjacency_loss(grad15: torch.Tensor, edge2face: torch.Tensor, w_e: torch.Ten
     
     # Apply valid mask and compute loss
     valid_contribution = valid.float() * w_interior * (1.0 - cos_theta)
-    L_adj = lambda_adj * valid_contribution.sum()
+    
+    # CRITICAL FIX: Normalize by number of edges and channel pairs
+    # This prevents the raw loss from being in the hundreds of thousands
+    num_interior_edges = interior.sum().item()
+    num_channel_pairs = 15  # 6 choose 2
+    normalizer = max(num_interior_edges * num_channel_pairs, 1)
+    
+    L_adj_normalized = valid_contribution.sum() / normalizer
+    L_adj = lambda_adj * L_adj_normalized
     
     return L_adj
 
