@@ -327,19 +327,23 @@ class GradNorm:
             losses: Dictionary of individual loss components
             shared_params: Shared parameters (e.g., f_values)
         """
+        # Only track the actual loss components
+        loss_keys = ['area', 'adjacency', 'tv']
+        
         if self.initial_losses is None:
-            self.initial_losses = {k: v.item() for k, v in losses.items() 
-                                 if k not in ['total', 'area_fractions']}
+            self.initial_losses = {k: losses[k].item() for k in loss_keys if k in losses}
             return
         
         # Compute gradients for each task
         grads = []
         loss_ratios = []
         
-        for i, (key, loss) in enumerate(losses.items()):
-            if key in ['total', 'area_fractions']:
+        for key in loss_keys:
+            if key not in losses:
                 continue
-                
+            
+            loss = losses[key]
+            
             # Compute gradient magnitude
             grad = torch.autograd.grad(loss, shared_params, retain_graph=True)[0]
             grad_norm = grad.norm()
@@ -381,8 +385,10 @@ class GradNorm:
         """Apply current weights to losses."""
         weighted_loss = 0
         i = 0
-        for key, loss in losses.items():
-            if key != 'total' and key != 'area_fractions':
-                weighted_loss += self.weights[i] * loss
+        # Only include the actual loss components, not debug values
+        loss_keys = ['area', 'adjacency', 'tv']
+        for key in loss_keys:
+            if key in losses:
+                weighted_loss += self.weights[i] * losses[key]
                 i += 1
         return weighted_loss
