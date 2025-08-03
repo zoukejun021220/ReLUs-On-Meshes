@@ -245,9 +245,9 @@ def train_stage(config: TrainingConfig,
         # Backward pass
         scaler.scale(loss).backward()
         
-        # Gradient clipping
+        # Gradient clipping - increased threshold to allow more learning
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_([f_values], max_norm=5.0)
+        torch.nn.utils.clip_grad_norm_([f_values], max_norm=10.0)
         
         # Optimizer step
         scaler.step(optimizer)
@@ -256,8 +256,8 @@ def train_stage(config: TrainingConfig,
         # Learning rate update
         lr_scheduler.step()
         
-        # Soft pinning
-        soft_pinning(f_values, pinned_indices, pinned_values, decay_rate=0.995)
+        # Soft pinning - reduced strength to allow more learning
+        soft_pinning(f_values, pinned_indices, pinned_values, decay_rate=0.99)
         
         # Record history
         if step % 100 == 0:
@@ -432,7 +432,7 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
         config = TrainingConfig(level=0, num_faces=-1, steps=steps,
                                beta_start=2.0, beta_end=25.0,
                                lambda_adj_start=0.0, lambda_adj_end=1.0,  # Fixed: was 8.0, way too high for normalized loss
-                               lr_max=5e-4)  # Lower learning rate for stability
+                               lr_max=5e-3)  # Increased: was too low at 5e-4
         
         mesh_data = {
             'vertices': vertices_torch,
