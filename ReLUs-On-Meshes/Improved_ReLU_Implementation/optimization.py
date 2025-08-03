@@ -35,13 +35,16 @@ class CoarseToFineSchedule:
         self.stages = [
             TrainingConfig(level=0, num_faces=3000, steps=30000,
                          beta_start=2.0, beta_end=10.0,
-                         lambda_adj_start=0.0, lambda_adj_end=0.5),  # Normalized: much smaller values
+                         lambda_adj_start=0.0, lambda_adj_end=0.5,
+                         lr_max=1e-3),  # Lower LR for initial stage
             TrainingConfig(level=1, num_faces=12000, steps=60000,
                          beta_start=10.0, beta_end=10.0,
-                         lambda_adj_start=0.5, lambda_adj_end=0.5),  # Normalized: much smaller values
+                         lambda_adj_start=0.5, lambda_adj_end=0.5,
+                         lr_max=5e-4),  # Even lower for middle stage
             TrainingConfig(level=2, num_faces=-1, steps=120000,  # -1 means full resolution
                          beta_start=10.0, beta_end=25.0,
-                         lambda_adj_start=0.5, lambda_adj_end=1.0),  # Normalized: much smaller values
+                         lambda_adj_start=0.5, lambda_adj_end=1.0,
+                         lr_max=2e-4),  # Lowest for final stage
         ]
         
     def get_stage(self, level: int) -> TrainingConfig:
@@ -428,7 +431,8 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
         steps = iterations if iterations is not None else 200000
         config = TrainingConfig(level=0, num_faces=-1, steps=steps,
                                beta_start=2.0, beta_end=25.0,
-                               lambda_adj_start=0.0, lambda_adj_end=8.0)
+                               lambda_adj_start=0.0, lambda_adj_end=1.0,  # Fixed: was 8.0, way too high for normalized loss
+                               lr_max=5e-4)  # Lower learning rate for stability
         
         mesh_data = {
             'vertices': vertices_torch,
