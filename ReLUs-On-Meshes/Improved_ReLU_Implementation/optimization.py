@@ -228,6 +228,7 @@ def train_stage(config: TrainingConfig,
                 mesh_data['edge2face'],
                 mesh_data['face_areas'],
                 mesh_data['B'],
+                face_mask=mesh_data.get('face_mask', None),
                 beta=beta,
                 lambda_area=config.lambda_area,
                 lambda_adj=lambda_adj,
@@ -332,8 +333,9 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
     face_areas = compute_face_areas(vertices, faces)
     face_areas_torch = torch.tensor(face_areas, dtype=torch.float32, device=device)
     
-    B = compute_barycentric_matrices(vertices, faces)
+    B, face_mask = compute_barycentric_matrices(vertices, faces, return_mask=True)
     B_torch = torch.tensor(B, dtype=torch.float32, device=device)
+    face_mask_torch = torch.tensor(face_mask, dtype=torch.bool, device=device)
     
     # Initialize field values
     f_values = nn.Parameter(torch.randn(len(vertices), num_channels, device=device) * 0.01)
@@ -379,6 +381,7 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
                 
                 # Prepare coarse mesh data
                 coarse_edges, coarse_edge2face, _ = compute_mesh_adjacency(coarse_faces)
+                coarse_B, coarse_face_mask = compute_barycentric_matrices(coarse_vertices, coarse_faces, return_mask=True)
                 mesh_data = {
                     'vertices': torch.tensor(coarse_vertices, dtype=torch.float32, device=device),
                     'faces': torch.tensor(coarse_faces, dtype=torch.int64, device=device),
@@ -386,8 +389,8 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
                     'edge2face': torch.tensor(coarse_edge2face, dtype=torch.int64, device=device),
                     'face_areas': torch.tensor(compute_face_areas(coarse_vertices, coarse_faces), 
                                              dtype=torch.float32, device=device),
-                    'B': torch.tensor(compute_barycentric_matrices(coarse_vertices, coarse_faces),
-                                    dtype=torch.float32, device=device)
+                    'B': torch.tensor(coarse_B, dtype=torch.float32, device=device),
+                    'face_mask': torch.tensor(coarse_face_mask, dtype=torch.bool, device=device)
                 }
                 
                 # Train on coarse mesh
@@ -410,7 +413,8 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
                     'edges': edges_torch,
                     'edge2face': edge2face_torch,
                     'face_areas': face_areas_torch,
-                    'B': B_torch
+                    'B': B_torch,
+                    'face_mask': face_mask_torch
                 }
                 
                 history = train_stage(config, f_values, mesh_data,
@@ -430,7 +434,8 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
             'edges': edges_torch,
             'edge2face': edge2face_torch,
             'face_areas': face_areas_torch,
-            'B': B_torch
+            'B': B_torch,
+            'face_mask': face_mask_torch
         }
         
         history = train_stage(config, f_values, mesh_data,

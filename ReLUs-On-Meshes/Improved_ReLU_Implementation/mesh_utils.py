@@ -308,16 +308,20 @@ def compute_face_areas(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
     return areas
 
 
-def compute_barycentric_matrices(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
+def compute_barycentric_matrices(vertices: np.ndarray, faces: np.ndarray, 
+                                return_mask: bool = True) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute barycentric coordinate matrices for gradient computation.
+    Handles degenerate triangles safely to prevent NaN propagation.
     
     Args:
         vertices: Array of shape (N, 3) containing vertex positions
         faces: Array of shape (F, 3) containing triangle indices
+        return_mask: If True, also return mask of valid (non-degenerate) faces
         
     Returns:
         B: Array of shape (F, 3, 3) containing barycentric matrices
+        face_mask: Boolean array of shape (F,) indicating valid faces (if return_mask=True)
     """
     v0 = vertices[faces[:, 0]]  # (F, 3)
     v1 = vertices[faces[:, 1]]  # (F, 3)
@@ -327,14 +331,29 @@ def compute_barycentric_matrices(vertices: np.ndarray, faces: np.ndarray) -> np.
     e1 = v1 - v0  # (F, 3)
     e2 = v2 - v0  # (F, 3)
     
-    # Build matrices [e1, e2, n] where n is the normal
-    n = np.cross(e1, e2)  # (F, 3)
-    n = n / (np.linalg.norm(n, axis=1, keepdims=True) + 1e-10)
+    # Compute cross product and area
+    cross = np.cross(e1, e2)  # (F, 3)
+    area2 = np.linalg.norm(cross, axis=1)  # double area
+    
+    # Identify valid (non-degenerate) triangles
+    eps = 1e-8
+    face_mask = area2 > eps
+    
+    # Initialize normal vectors
+    n = np.zeros_like(cross)
+    # Only normalize for valid faces to avoid division by zero
+    n[face_mask] = cross[face_mask] / area2[face_mask, None]
     
     # Stack to form (F, 3, 3) matrices
     M = np.stack([e1, e2, n], axis=2)  # (F, 3, 3)
     
-    # Compute inverse (actually pseudo-inverse for stability)
-    B = np.linalg.pinv(M)  # (F, 3, 3)
+    # Initialize B matrices
+    B = np.zeros_like(M)
+    # Only compute inverse for valid faces
+    if face_mask.any():
+        B[face_mask] = np.linalg.pinv(M[face_mask])
     
-    return B
+    if return_mask:
+        return B, face_mask
+    else:
+        return B

@@ -130,15 +130,19 @@ def adjacency_loss(grad15: torch.Tensor, edge2face: torch.Tensor, w_e: torch.Ten
 
 
 def gated_tv_loss(d_v: torch.Tensor, edges: torch.Tensor, w_e: torch.Tensor,
+                  edge2face: torch.Tensor, face_mask: Optional[torch.Tensor],
                   lambda_tv: float) -> torch.Tensor:
     """
     Compute gated total variation loss.
     Numerically stable version with clamping to prevent explosions.
+    Ignores edges adjacent to degenerate faces.
     
     Args:
         d_v: Tensor of shape (V, 15) containing pairwise differences
         edges: Tensor of shape (E, 2) containing edge vertex indices
         w_e: Tensor of shape (E, 15) containing edge weights
+        edge2face: Tensor of shape (E, 2) containing face indices per edge
+        face_mask: Boolean tensor of shape (F,) indicating valid faces
         lambda_tv: Weight for TV loss
         
     Returns:
@@ -146,9 +150,24 @@ def gated_tv_loss(d_v: torch.Tensor, edges: torch.Tensor, w_e: torch.Tensor,
     """
     tv_clip = 2e2  # Reduced from 1e3 for better stability
     
+    # Filter edges - ignore if either adjacent face is degenerate
+    if face_mask is not None:
+        f1, f2 = edge2face.T
+        # Check if faces are degenerate
+        deg1 = (f1 >= 0) & (~face_mask[f1])
+        deg2 = (f2 >= 0) & (~face_mask[f2])
+        good_edge = ~(deg1 | deg2)
+        
+        # Filter edges
+        edges = edges[good_edge]
+        w_e = w_e[good_edge]
+    
+    if len(edges) == 0:
+        return torch.tensor(0.0, device=d_v.device)
+    
     va, vb = edges.T
-    d_i = d_v[va]  # (E, 15)
-    d_j = d_v[vb]  # (E, 15)
+    d_i = d_v[va]  # (E_good, 15)
+    d_j = d_v[vb]  # (E_good, 15)
     
     # Compute squared differences with clamping
     diff_squared = (d_i - d_j).pow(2).clamp(max=tv_clip)
@@ -198,6 +217,7 @@ def compute_total_loss(f_values: torch.Tensor,
                       edge2face: torch.Tensor,
                       face_areas: torch.Tensor,
                       B: torch.Tensor,
+                      face_mask: Optional[torch.Tensor] = None,
                       beta: float = 10.0,
                       lambda_area: float = 1.0,
                       lambda_adj: float = 5.0,
@@ -235,7 +255,7 @@ def compute_total_loss(f_values: torch.Tensor,
     # 4. Compute individual losses
     L_area, area_frac = area_balance_loss(f_values, faces, face_areas, beta, lambda_area)
     L_adj = adjacency_loss(grad15, edge2face, w_e, lambda_adj)
-    L_tv = gated_tv_loss(d_v, edges, w_e, lambda_tv)
+    L_tv = gated_tv_loss(d_v, edges, w_e, edge2face, face_mask, lambda_tv)
     
     # 5. Total loss
     total = L_area + L_adj + L_tv
@@ -296,6 +316,10 @@ class GradNorm:
         
         grads = torch.stack(grads)
         loss_ratios = torch.tensor(loss_ratios)
+        
+        # Safety check - skip update if any gradient is NaN
+        if torch.isnan(grads).any() or torch.isinf(grads).any():
+            return
         
         # Compute mean gradient norm
         mean_grad = grads.mean()
