@@ -96,17 +96,16 @@ def adjacency_loss_corrected(grad15: torch.Tensor, edge2face: torch.Tensor,
     max_penalty = 0.5 if use_squared else 2.0
     penalty = torch.where(torch.isfinite(penalty), penalty, penalty.new_tensor(max_penalty))
     
-    # VECTORIZED: Normalize each pair independently
-    # Compute weighted penalties
-    weighted_penalties = w_interior * penalty  # (E_interior, 15)
+    # CRITICAL FIX: Per-edge normalization (not per-pair!)
+    # Each edge contributes its own normalized loss
+    edge_losses = w_interior * penalty  # (E_interior, 15)
     
-    # Sum over edges for each pair, then normalize by weight sum per pair
-    pair_losses = weighted_penalties.sum(dim=0)  # (15,)
-    weight_sums = w_interior.sum(dim=0).clamp_min(1e-8)  # (15,)
-    normalized_losses = pair_losses / weight_sums  # (15,)
+    # Normalize EACH EDGE separately
+    edge_weights = w_interior.sum(dim=1, keepdim=True).clamp_min(1e-6)  # (E_interior, 1)
+    normalized_edge_losses = edge_losses.sum(dim=1) / edge_weights.squeeze()  # (E_interior,)
     
-    # Total adjacency loss is AVERAGE over all pairs (divide by 15)
-    L_adj_raw = normalized_losses.mean()  # Changed from sum() to mean()
+    # Average over all edges, then average over pairs
+    L_adj_raw = normalized_edge_losses.mean()  # Average over edges
     
     # Return both weighted and raw for monitoring
     if lambda_adj == 0:
@@ -130,10 +129,10 @@ def gated_tv_loss_corrected(d_v: torch.Tensor, edges: torch.Tensor,
     # Squared difference in field values
     diff_squared = (d_i - d_j).pow(2)
     
-    # CORRECTED: Use w_e*(1-w_e) for better gradient flow
-    # This peaks at boundaries (w_e=0.5) and vanishes both inside (w_e=0) and at converged boundaries (w_e=1)
+    # CRITICAL FIX: Use (1-w_e)^2 for stronger interior smoothing
+    # This gives maximum smoothing inside regions (w_e≈0) and minimal at boundaries (w_e≈1)
     # Divide by number of channel pairs (15) to match adjacency scale
-    gating = w_e * (1 - w_e)  # Maximum at boundaries, zero when converged
+    gating = (1 - w_e).pow(2)  # Strong inside regions, weak at boundaries
     L_tv = (gating * diff_squared).sum() / d_v.shape[1]
     
     return lambda_tv * L_tv

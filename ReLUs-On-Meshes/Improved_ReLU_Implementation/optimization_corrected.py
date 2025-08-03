@@ -33,20 +33,20 @@ class CoarseToFineSchedule:
     """Manages coarse-to-fine training schedule (CORRECTED parameters)."""
     
     def __init__(self):
-        # CORRECTED: Slower beta ramp, frozen lambda_adj in later stages
+        # CRITICAL FIX: Much sharper beta schedule (0→6→32)
         self.stages = [
             TrainingConfig(level=0, num_faces=3000, steps=30000,
-                         beta_start=0.0, beta_end=6.0,  # Slower: 0->6
+                         beta_start=0.0, beta_end=6.0,  # Warm-up: 0->6
                          lambda_adj_start=0.0, lambda_adj_end=5.0,  # 0->5
-                         lr_max=5e-3, lambda_area=4.0),  # Increased area weight
+                         lr_max=5e-3, lambda_area=1.0),  # Keep at 1.0
             TrainingConfig(level=1, num_faces=12000, steps=60000,
-                         beta_start=6.0, beta_end=12.0,  # Slower: 6->12
-                         lambda_adj_start=5.0, lambda_adj_end=5.0,  # Stay at 5
-                         lr_max=5e-3, lambda_area=4.0),  
+                         beta_start=6.0, beta_end=16.0,  # Sharp: 6->16
+                         lambda_adj_start=5.0, lambda_adj_end=6.0,  # 5->6
+                         lr_max=5e-3, lambda_area=1.0),  
             TrainingConfig(level=2, num_faces=-1, steps=180000,  # More steps
-                         beta_start=12.0, beta_end=20.0,  # Slower: 12->20
-                         lambda_adj_start=5.0, lambda_adj_end=5.0,  # FROZEN at 5
-                         lr_max=5e-3, lambda_area=4.0),  
+                         beta_start=16.0, beta_end=32.0,  # Very sharp: 16->32
+                         lambda_adj_start=6.0, lambda_adj_end=6.0,  # Cap at 6
+                         lr_max=5e-3, lambda_area=1.0),  
         ]
         
     def get_stage(self, level: int) -> TrainingConfig:
@@ -156,6 +156,13 @@ def train_stage(config: TrainingConfig,
         else:
             lambda_adj = schedule.interpolate_param(config.lambda_adj_start, config.lambda_adj_end, progress)
         
+        # CRITICAL FIX: Decay TV as beta increases
+        if beta <= 10.0:
+            lambda_tv = config.lambda_tv  # Full TV during warm-up
+        else:
+            # Decay from 0.1 to 0.01 as beta goes from 10 to 32
+            lambda_tv = config.lambda_tv * max(0.1, 10.0 / beta)
+        
         optimizer.zero_grad()
         
         # Forward pass with mixed precision
@@ -172,7 +179,7 @@ def train_stage(config: TrainingConfig,
                 beta=beta,
                 lambda_area=config.lambda_area,
                 lambda_adj=lambda_adj,
-                lambda_tv=config.lambda_tv,
+                lambda_tv=lambda_tv,  # Use decayed TV
                 return_components=True
             )
         
@@ -301,7 +308,14 @@ def train_stage(config: TrainingConfig,
                 # Clear output showing both values with better diagnostics
                 print(f"  Raw adj (normalized): {raw_adj:.4f} (target < 0.05)")
                 print(f"  Weighted adj (λ*norm): {loss_dict['adjacency'].item():.4f}")
-                print(f"  Weight sum: {weight_sum:.1f}, β={beta:.1f}, λ_adj={lambda_adj:.2f}")
+                print(f"  Weight sum: {weight_sum:.1f}, β={beta:.1f}, λ_adj={lambda_adj:.2f}, λ_tv={lambda_tv:.3f}")
+                
+                # CRITICAL DIAGNOSTIC: Check weight selectivity
+                if 'weight_sum' in loss_dict and isinstance(loss_dict['weight_sum'], torch.Tensor):
+                    w_e = loss_dict['weight_sum']
+                    if w_e.numel() > 1:
+                        selective = (w_e > 0.5).float().mean().item()
+                        print(f"  Weight selectivity (>0.5): {selective:.3f} (should drop < 0.15)")
                 
                 # Clear warning about expected behavior
                 if step == 0:
@@ -383,12 +397,12 @@ def optimize_mesh_segmentation_corrected(vertices: np.ndarray,
             full_history[f'level_{level}'] = history
             
     else:
-        # Direct training on full resolution (CORRECTED schedule)
+        # Direct training on full resolution (CRITICAL FIX: beta to 32)
         steps = iterations if iterations is not None else 300000
         config = TrainingConfig(level=0, num_faces=-1, steps=steps,
-                               beta_start=0.0, beta_end=20.0,  # Slower ramp
-                               lambda_adj_start=0.0, lambda_adj_end=5.0,  # Cap at 5
-                               lr_max=5e-3, lambda_area=4.0)  # Increased area weight
+                               beta_start=0.0, beta_end=32.0,  # Much sharper: 0->32
+                               lambda_adj_start=0.0, lambda_adj_end=6.0,  # Cap at 6
+                               lr_max=5e-3, lambda_area=1.0)  # Standard area weight
         
         print(f"\n{'='*60}")
         print(f"Direct Training: Full resolution, {config.steps} steps")
@@ -409,5 +423,39 @@ def optimize_mesh_segmentation_corrected(vertices: np.ndarray,
         history = train_stage(config, f_values, mesh_data, pinned_indices, schedule, device,
                             checkpoint_dir=checkpoint_dir, stage_name='direct')
         full_history['direct'] = history
+    
+    # CRITICAL FIX: Final projection pass with beta=60
+    print("\n" + "="*60)
+    print("Running final projection pass (β=60, λ_adj=0, λ_tv=0)")
+    print("="*60)
+    
+    with torch.no_grad():
+        # Run one final pass with very high beta and no regularization
+        loss_dict = compute_total_loss_corrected(
+            f_values,
+            vertices_torch,
+            faces_torch,
+            edges_torch,
+            edge2face_torch,
+            face_areas_torch,
+            B_torch,
+            face_mask=face_mask_torch,
+            beta=60.0,  # Very high beta for sharp boundaries
+            lambda_area=0.0,  # No area regularization
+            lambda_adj=0.0,   # No adjacency regularization
+            lambda_tv=0.0,    # No TV regularization
+            return_components=True
+        )
+        
+        # Apply softmax with high beta to get sharp segmentation
+        sharp_probs = torch.softmax(60.0 * f_values, dim=1)
+        
+        # Update f_values to reflect the sharp segmentation
+        f_values.data = torch.log(sharp_probs + 1e-10) / 60.0
+        
+        print(f"Projection complete. Final loss components:")
+        print(f"  Area: {loss_dict['area'].item():.4f}")
+        print(f"  Raw adj: {loss_dict.get('raw_adj_normalized', 0).item():.4f}")
+        print(f"  Weight sum: {loss_dict.get('weight_sum', 0).item():.1f}")
     
     return f_values, full_history
