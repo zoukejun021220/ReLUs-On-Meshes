@@ -101,26 +101,28 @@ def downsample_mesh(vertices: np.ndarray, faces: np.ndarray,
     
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
     
-    # Check if trimesh version supports return_mapping
-    try:
-        # Try modern trimesh API (>= 4.1.0)
-        simplified, orig_index = mesh.simplify_quadric_decimation(
-            face_count=target_faces, return_mapping=True)
-        # orig_index is already a valid subset of [0, ..., V-1]
-        return simplified.vertices, simplified.faces, orig_index
-    except TypeError:
-        # Fallback for older trimesh versions
-        simplified = mesh.simplify_quadric_decimation(face_count=target_faces)
-        
-        # Find mapping from simplified to original vertices
-        from scipy.spatial import cKDTree
-        tree = cKDTree(vertices)
-        _, vertex_mapping = tree.query(simplified.vertices)
-        
-        # Clip indices to prevent out of bounds
-        vertex_mapping = np.minimum(vertex_mapping, len(vertices) - 1).astype(np.int64)
-        
-        return simplified.vertices, simplified.faces, vertex_mapping
+    # Always use the safe KDTree method for now to avoid API compatibility issues
+    simplified = mesh.simplify_quadric_decimation(face_count=target_faces)
+    
+    # Find mapping from simplified to original vertices
+    from scipy.spatial import cKDTree
+    tree = cKDTree(vertices)
+    _, vertex_mapping = tree.query(simplified.vertices)
+    
+    # Ensure mapping is within bounds
+    vertex_mapping = np.array(vertex_mapping, dtype=np.int64)
+    max_valid_idx = len(vertices) - 1
+    
+    if vertex_mapping.max() > max_valid_idx:
+        print(f"Warning: Found out-of-bounds indices in vertex mapping")
+        print(f"Max index: {vertex_mapping.max()}, should be <= {max_valid_idx}")
+        # Clip to valid range
+        vertex_mapping = np.clip(vertex_mapping, 0, max_valid_idx)
+    
+    print(f"Downsampled mesh: {len(simplified.vertices)} vertices from {len(vertices)}")
+    print(f"Vertex mapping range: [{vertex_mapping.min()}, {vertex_mapping.max()}]")
+    
+    return simplified.vertices, simplified.faces, vertex_mapping
 
 
 def soft_pinning(f_values: torch.Tensor, pinned_indices: List[int], 
@@ -348,6 +350,10 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
             print(f"\n=== Training Level {level} ===")
             config = schedule.get_stage(level)
             
+            # Debug info
+            print(f"Current f_values shape: {f_values.shape}")
+            print(f"Number of vertices: {len(vertices)}")
+            
             # Prepare mesh for this level
             if config.num_faces > 0 and config.num_faces < len(faces):
                 # Downsample mesh
@@ -355,8 +361,17 @@ def optimize_mesh_segmentation(vertices: np.ndarray,
                     vertices, faces, config.num_faces
                 )
                 
-                # Map field values to coarse mesh
-                coarse_f_values = nn.Parameter(f_values[vertex_mapping].clone())
+                # Map field values to coarse mesh with bounds checking
+                # Ensure vertex_mapping is within bounds
+                vertex_mapping = np.array(vertex_mapping, dtype=np.int64)
+                max_idx = len(vertices) - 1
+                if vertex_mapping.max() > max_idx:
+                    print(f"Warning: vertex_mapping has out-of-bounds indices. Max index: {vertex_mapping.max()}, should be <= {max_idx}")
+                    vertex_mapping = np.clip(vertex_mapping, 0, max_idx)
+                
+                # Convert to tensor and index
+                vertex_mapping_tensor = torch.from_numpy(vertex_mapping).to(device)
+                coarse_f_values = nn.Parameter(f_values[vertex_mapping_tensor].clone())
                 
                 # Map pinned indices
                 coarse_pinned = []
