@@ -132,13 +132,21 @@ def adjacency_loss(grad15: torch.Tensor, edge2face: torch.Tensor, w_e: torch.Ten
     # Apply valid mask and compute loss
     valid_contribution = valid.float() * w_interior * (1.0 - cos_theta)
     
+    # Sum all contributions (this is the unnormalized raw sum)
+    raw_sum = valid_contribution.sum()
+    
     # CRITICAL FIX: Normalize by number of edges and channel pairs
     # This prevents the raw loss from being in the hundreds of thousands
     num_interior_edges = interior.sum().item()
     num_channel_pairs = 15  # 6 choose 2
     normalizer = max(num_interior_edges * num_channel_pairs, 1)
     
-    L_adj_normalized = valid_contribution.sum() / normalizer
+    L_adj_normalized = raw_sum / normalizer
+    
+    # Debug output occasionally
+    if torch.rand(1).item() < 0.001:  # 0.1% chance
+        print(f"  [ADJ DEBUG] raw_sum={raw_sum:.1f}, normalizer={normalizer}, normalized={L_adj_normalized:.4f}, λ={lambda_adj:.2f}")
+    
     L_adj = lambda_adj * L_adj_normalized
     
     return L_adj
@@ -285,11 +293,16 @@ def compute_total_loss(f_values: torch.Tensor,
     result = {'total': total}
     
     if return_components:
+        # For debugging: compute raw normalized adjacency (before lambda multiplication)
+        # This is the actual normalized value that should be in [0, 2] range
+        raw_adj_normalized = L_adj / lambda_adj if lambda_adj > 0 else torch.tensor(0.0)
+        
         result.update({
             'area': L_area,
             'adjacency': L_adj,
             'tv': L_tv,
-            'area_fractions': area_frac
+            'area_fractions': area_frac,
+            'raw_adj_normalized': raw_adj_normalized  # Add this for debugging
         })
     
     return result

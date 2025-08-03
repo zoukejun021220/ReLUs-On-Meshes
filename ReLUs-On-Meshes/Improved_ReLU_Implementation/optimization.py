@@ -276,11 +276,11 @@ def train_stage(config: TrainingConfig,
                       f"Adj={loss_dict['adjacency'].item():.4f}, "
                       f"TV={loss_dict['tv'].item():.4f}")
                 
-                # Show raw losses (before weighting)
+                # Show raw losses (before weighting) - use the normalized raw for adjacency
                 raw_area = loss_dict['area'].item() / config.lambda_area if config.lambda_area > 0 else 0
-                raw_adj = loss_dict['adjacency'].item() / lambda_adj if lambda_adj > 0 else 0
+                raw_adj = loss_dict.get('raw_adj_normalized', loss_dict['adjacency'] / lambda_adj if lambda_adj > 0 else 0).item()
                 raw_tv = loss_dict['tv'].item() / config.lambda_tv if config.lambda_tv > 0 else 0
-                print(f"  Raw losses: Area={raw_area:.4f}, Adj={raw_adj:.4f}, TV={raw_tv:.4f}")
+                print(f"  Raw normalized: Area={raw_area:.4f}, Adj={raw_adj:.4f}, TV={raw_tv:.4f}")
                 print(f"  Weights: λ_area={config.lambda_area}, λ_adj={lambda_adj:.2f}, λ_tv={config.lambda_tv}")
                 print(f"  Area fractions: {loss_dict['area_fractions'].detach().cpu().numpy()}")
     
