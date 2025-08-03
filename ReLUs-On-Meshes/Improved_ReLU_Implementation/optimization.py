@@ -270,11 +270,19 @@ def train_stage(config: TrainingConfig,
             
             # Print progress
             if step % 1000 == 0:
+                # Show weighted losses
                 print(f"Step {step}/{config.steps}: Loss={loss.item():.4f}, "
                       f"Area={loss_dict['area'].item():.4f}, "
                       f"Adj={loss_dict['adjacency'].item():.4f}, "
                       f"TV={loss_dict['tv'].item():.4f}")
-                print(f"Area fractions: {loss_dict['area_fractions'].detach().cpu().numpy()}")
+                
+                # Show raw losses (before weighting)
+                raw_area = loss_dict['area'].item() / config.lambda_area if config.lambda_area > 0 else 0
+                raw_adj = loss_dict['adjacency'].item() / lambda_adj if lambda_adj > 0 else 0
+                raw_tv = loss_dict['tv'].item() / config.lambda_tv if config.lambda_tv > 0 else 0
+                print(f"  Raw losses: Area={raw_area:.4f}, Adj={raw_adj:.4f}, TV={raw_tv:.4f}")
+                print(f"  Weights: λ_area={config.lambda_area}, λ_adj={lambda_adj:.2f}, λ_tv={config.lambda_tv}")
+                print(f"  Area fractions: {loss_dict['area_fractions'].detach().cpu().numpy()}")
     
     return history
 
