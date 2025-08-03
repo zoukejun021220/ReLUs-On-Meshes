@@ -70,34 +70,37 @@ def adjacency_loss_corrected(grad15: torch.Tensor, edge2face: torch.Tensor,
     # Get weights for interior edges
     w_interior = w_e[interior]  # (E_interior, 15)
     
-    # Compute loss for each pair
-    L_adj = 0.0
-    for pair in range(15):
-        # Get gradients for this pair
-        g1_pair = g1[:, :, pair]  # (E_interior, 3)
-        g2_pair = g2[:, :, pair]  # (E_interior, 3)
-        
-        # Compute norms
-        n1 = g1_pair.norm(dim=1)  # (E_interior,)
-        n2 = g2_pair.norm(dim=1)  # (E_interior,)
-        
-        # Compute cosine similarity (with safety for zero gradients)
-        dot_prod = (g1_pair * g2_pair).sum(dim=1)  # (E_interior,)
-        cos_sim = dot_prod / (n1 * n2 + 1e-10)
-        
-        # CRITICAL: Clamp cosine to prevent -inf
-        cos_sim = torch.clamp(cos_sim, -1.0 + 1e-6, 1.0 - 1e-6)
-        
-        # Linear penalty: (1 - cos) with ReLU to ensure non-negative
-        penalty = torch.relu(1.0 - cos_sim)
-        
-        # Additional safety: replace any inf/nan with 2.0 (max penalty)
-        penalty = torch.where(torch.isfinite(penalty), penalty, penalty.new_tensor(2.0))
-        
-        # CRITICAL: Normalize per pair, not globally
-        total_weight_pair = w_interior[:, pair].sum().clamp_min(1e-8)
-        weighted_penalty = w_interior[:, pair] * penalty
-        L_adj += weighted_penalty.sum() / total_weight_pair
+    # VECTORIZED: Compute all pairs at once
+    # Compute norms for all pairs
+    n1 = g1.norm(dim=1)  # (E_interior, 15)
+    n2 = g2.norm(dim=1)  # (E_interior, 15)
+    
+    # Compute dot products for all pairs
+    dot_prod = (g1 * g2).sum(dim=1)  # (E_interior, 15)
+    
+    # Compute cosine similarity for all pairs
+    cos_sim = dot_prod / (n1 * n2 + 1e-10)
+    
+    # CRITICAL: Clamp cosine to prevent -inf
+    cos_sim = torch.clamp(cos_sim, -1.0 + 1e-6, 1.0 - 1e-6)
+    
+    # Linear penalty: (1 - cos) with ReLU to ensure non-negative
+    penalty = torch.relu(1.0 - cos_sim)  # (E_interior, 15)
+    
+    # Additional safety: replace any inf/nan with 2.0 (max penalty)
+    penalty = torch.where(torch.isfinite(penalty), penalty, penalty.new_tensor(2.0))
+    
+    # VECTORIZED: Normalize each pair independently
+    # Compute weighted penalties
+    weighted_penalties = w_interior * penalty  # (E_interior, 15)
+    
+    # Sum over edges for each pair, then normalize by weight sum per pair
+    pair_losses = weighted_penalties.sum(dim=0)  # (15,)
+    weight_sums = w_interior.sum(dim=0).clamp_min(1e-8)  # (15,)
+    normalized_losses = pair_losses / weight_sums  # (15,)
+    
+    # Total adjacency loss is sum over all pairs
+    L_adj = normalized_losses.sum()
     
     # Already normalized per pair above
     return lambda_adj * L_adj
@@ -197,14 +200,18 @@ def compute_total_loss_corrected(f_values: torch.Tensor,
     import itertools
     pairs = torch.tensor(list(itertools.combinations(range(6), 2)))
     
-    # 1. Compute pairwise differences
-    # Inline implementation to avoid import issues
+    # 1. Compute pairwise differences (VECTORIZED)
+    # Create index pairs for all combinations
     num_channels = f_values.shape[1]
-    d_v = []
+    idx_i = []
+    idx_j = []
     for i in range(num_channels):
         for j in range(i+1, num_channels):
-            d_v.append(f_values[:, i] - f_values[:, j])
-    d_v = torch.stack(d_v, dim=1)  # (V, 15)
+            idx_i.append(i)
+            idx_j.append(j)
+    
+    # Vectorized computation of all pairwise differences
+    d_v = f_values[:, idx_i] - f_values[:, idx_j]  # (V, 15)
     
     # 2. Compute edge weights (NO THRESHOLD)
     w_e = compute_edge_weights(d_v, edges, beta)
