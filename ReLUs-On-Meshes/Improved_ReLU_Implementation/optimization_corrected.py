@@ -33,20 +33,20 @@ class CoarseToFineSchedule:
     """Manages coarse-to-fine training schedule (CORRECTED parameters)."""
     
     def __init__(self):
-        # CRITICAL FIX: Much sharper beta schedule (0→6→32)
+        # CRITICAL FIX: Much sharper beta schedule with strong area constraint
         self.stages = [
             TrainingConfig(level=0, num_faces=3000, steps=30000,
                          beta_start=0.0, beta_end=6.0,  # Warm-up: 0->6
                          lambda_adj_start=0.0, lambda_adj_end=5.0,  # 0->5
-                         lr_max=5e-3, lambda_area=1.0),  # Keep at 1.0
+                         lr_max=5e-3, lambda_area=5.0),  # Strong area constraint
             TrainingConfig(level=1, num_faces=12000, steps=60000,
                          beta_start=6.0, beta_end=16.0,  # Sharp: 6->16
                          lambda_adj_start=5.0, lambda_adj_end=6.0,  # 5->6
-                         lr_max=5e-3, lambda_area=1.0),  
+                         lr_max=5e-3, lambda_area=5.0),  
             TrainingConfig(level=2, num_faces=-1, steps=180000,  # More steps
                          beta_start=16.0, beta_end=32.0,  # Very sharp: 16->32
                          lambda_adj_start=6.0, lambda_adj_end=6.0,  # Cap at 6
-                         lr_max=5e-3, lambda_area=1.0),  
+                         lr_max=5e-3, lambda_area=5.0),  
         ]
         
     def get_stage(self, level: int) -> TrainingConfig:
@@ -136,6 +136,7 @@ def train_stage(config: TrainingConfig,
     # Track when to freeze lambda_adj
     lambda_adj_frozen = False
     lambda_adj_frozen_value = 5.0
+    lambda_adj_activated = False  # Track when to start using lambda_adj
     
     # Checkpoint tracking
     checkpoint_steps = [100, 500, 1000, 5000, 10000, 20000, 50000, 100000, 200000]
@@ -149,26 +150,36 @@ def train_stage(config: TrainingConfig,
                 progress = step / 3000
                 beta = 0.0 + 4.0 * progress
                 lambda_adj = 0.0  # No adjacency during warm-up
-                lambda_tv = 0.05
+                lambda_tv = 0.02  # Reduced TV
             elif step < 50000:  # Stage A
                 progress = (step - 3000) / (50000 - 3000)
                 beta = 4.0 + 4.0 * progress  # 4→8
-                lambda_adj = 0.0 + 3.0 * progress  # 0→3
-                lambda_tv = 0.05
+                # CRITICAL: Only activate lambda_adj if boundaries are forming
+                if lambda_adj_activated:
+                    lambda_adj = 0.0 + 3.0 * progress  # 0→3
+                else:
+                    lambda_adj = 0.0  # Keep at 0 until boundaries form
+                lambda_tv = 0.02
             elif step < 120000:  # Stage B
                 progress = (step - 50000) / (120000 - 50000)
                 beta = 8.0 + 4.0 * progress  # 8→12
-                lambda_adj = 3.0 + 2.0 * progress  # 3→5
-                lambda_tv = 0.05
+                if lambda_adj_activated:
+                    lambda_adj = 3.0 + 2.0 * progress  # 3→5
+                else:
+                    lambda_adj = 0.0
+                lambda_tv = 0.02
             elif step < 200000:  # Stage C
                 progress = (step - 120000) / (200000 - 120000)
                 beta = 12.0 + 6.0 * progress  # 12→18
-                lambda_adj = 5.0  # Hold at 5
-                lambda_tv = 0.05
+                lambda_adj = 5.0 if lambda_adj_activated else 0.0
+                lambda_tv = 0.05  # Increase TV
             else:  # Stage D
                 progress = (step - 200000) / (300000 - 200000)
                 beta = 18.0 + 6.0 * progress  # 18→24
-                lambda_adj = 5.0 + 3.0 * progress  # 5→8
+                if lambda_adj_activated:
+                    lambda_adj = 5.0 + 3.0 * progress  # 5→8
+                else:
+                    lambda_adj = 0.0
                 lambda_tv = 0.05
         else:
             # Original scheduling for shorter runs
@@ -220,13 +231,30 @@ def train_stage(config: TrainingConfig,
         # Learning rate update
         lr_scheduler.step()
         
-        # Soft pinning (reduced strength)
-        soft_pinning(f_values, pinned_indices, pinned_values, decay_rate=0.99)
+        # CRITICAL FIX: Hard freeze anchors for first 10k steps, then soft pinning
+        if step < 10000:
+            # Hard pinning - directly set values
+            with torch.no_grad():
+                for i, idx in enumerate(pinned_indices):
+                    f_values[idx] = pinned_values[i]
+        else:
+            # Soft pinning after 10k steps
+            soft_pinning(f_values, pinned_indices, pinned_values, decay_rate=0.995)
         
         # Record history
         if step % 100 == 0:
             with torch.no_grad():
                 raw_adj = loss_dict.get('raw_adj_normalized', 0).item()
+                
+                # CRITICAL: Check if boundaries are forming
+                if not lambda_adj_activated and 'weight_sum' in loss_dict:
+                    w_e = loss_dict.get('weight_sum')
+                    if isinstance(w_e, torch.Tensor):
+                        w_e_max = w_e.max().item() if w_e.numel() > 1 else 0
+                        # Activate lambda_adj only when boundaries start forming
+                        if w_e_max > 0.9 or beta >= 3.0:
+                            lambda_adj_activated = True
+                            print(f"\n>>> ACTIVATING lambda_adj at step {step} (w_e.max={w_e_max:.3f}, β={beta:.1f})")
                 
                 # Freeze lambda_adj if raw_adj drops below threshold
                 if not lambda_adj_frozen and raw_adj < 0.15 and lambda_adj > 0:
@@ -242,7 +270,7 @@ def train_stage(config: TrainingConfig,
                 history['lr'].append(optimizer.param_groups[0]['lr'])
                 history['beta'].append(beta)
                 history['lambda_adj'].append(lambda_adj)
-                history['weight_sum'].append(loss_dict.get('weight_sum', 0).item())
+                history['weight_sum'].append(loss_dict.get('weight_sum_scalar', 0).item())
                 history['raw_adj'].append(raw_adj)
             
             # Save checkpoints at key steps
@@ -258,7 +286,7 @@ def train_stage(config: TrainingConfig,
                         'adjacency': loss_dict['adjacency'].item(),
                         'tv': loss_dict['tv'].item(),
                         'raw_adj': raw_adj,
-                        'weight_sum': loss_dict.get('weight_sum', 0).item(),
+                        'weight_sum': loss_dict.get('weight_sum_scalar', 0).item(),
                         'beta': beta,
                         'lambda_adj': lambda_adj,
                         'area_fractions': loss_dict['area_fractions'].detach().cpu().numpy()
@@ -332,6 +360,19 @@ def train_stage(config: TrainingConfig,
                       f"Adj={loss_dict['adjacency'].item():.4f}, "
                       f"TV={loss_dict['tv'].item():.4f}")
                 
+                # CRITICAL: Monitor edge weights to see if boundaries are forming
+                if step % 1000 == 0 and 'weight_sum' in loss_dict:
+                    w_e = loss_dict.get('weight_sum')
+                    if isinstance(w_e, torch.Tensor) and w_e.numel() > 1:
+                        w_e_cpu = w_e.detach().cpu()
+                        w_max = w_e_cpu.max().item()
+                        w_mean = w_e_cpu.mean().item()
+                        w_high = (w_e_cpu > 0.9).float().mean().item()
+                        print(f"  Edge weights: max={w_max:.3f}, mean={w_mean:.3f}, >0.9 ratio={w_high:.4f}")
+                        
+                        if w_max < 0.8 and step > 20000:
+                            print("  ⚠️ WARNING: No boundaries forming (max w_e < 0.8)")
+                
                 # Show important metrics - ensure we get the RIGHT raw value
                 if 'raw_adj_normalized' in loss_dict:
                     raw_adj = loss_dict['raw_adj_normalized'].item()
@@ -339,7 +380,7 @@ def train_stage(config: TrainingConfig,
                     # Fallback: compute from weighted loss
                     raw_adj = loss_dict['adjacency'].item() / lambda_adj if lambda_adj > 0 else 0
                     
-                weight_sum = loss_dict.get('weight_sum', 0).item()
+                weight_sum = loss_dict.get('weight_sum_scalar', 0).item()
                 
                 # Clear output showing both values with better diagnostics
                 print(f"  Raw adj (normalized): {raw_adj:.4f} (target < 0.05)")
@@ -467,7 +508,7 @@ def optimize_mesh_segmentation_corrected(vertices: np.ndarray,
         config = TrainingConfig(level=0, num_faces=-1, steps=steps,
                                beta_start=0.0, beta_end=24.0,  # Will be staged
                                lambda_adj_start=0.0, lambda_adj_end=8.0,  # Will be staged
-                               lr_max=5e-3, lambda_area=2.0)  # Increased for better balance
+                               lr_max=5e-3, lambda_area=5.0)  # CRITICAL: Strong area constraint
         
         print(f"\n{'='*60}")
         print(f"Direct Training: Full resolution, {config.steps} steps")
@@ -521,6 +562,6 @@ def optimize_mesh_segmentation_corrected(vertices: np.ndarray,
         print(f"Projection complete. Final loss components:")
         print(f"  Area: {loss_dict['area'].item():.4f}")
         print(f"  Raw adj: {loss_dict.get('raw_adj_normalized', 0).item():.4f}")
-        print(f"  Weight sum: {loss_dict.get('weight_sum', 0).item():.1f}")
+        print(f"  Weight sum: {loss_dict.get('weight_sum_scalar', 0).item():.1f}")
     
     return f_values, full_history

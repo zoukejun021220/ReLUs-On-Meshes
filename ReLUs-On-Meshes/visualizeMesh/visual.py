@@ -292,7 +292,7 @@ def load_volume_tet_mesh_and_extract_surface(file_path):
 if __name__ == "__main__":
     vertices_np, faces_np = load_volume_tet_mesh_and_extract_surface("ReLUs-On-Meshes/Piecewise Linear Mesh 3D/l1-poly-dat/hex/dragon/orig.tet.vtk")
     
-    data=np.load("ReLUs-On-Meshes/dragon.npz")
+    data=np.load("/home/kejunzou/Projects/ReLUs on Meshes/ReLUs-On-Meshes/orig.tet_mesh_and_values.npz")
     f_values=data["f_values"]
  
     

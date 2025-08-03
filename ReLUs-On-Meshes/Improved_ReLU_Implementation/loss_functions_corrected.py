@@ -70,16 +70,17 @@ def adjacency_loss_corrected(grad15: torch.Tensor, edge2face: torch.Tensor,
     # Get weights for interior edges
     w_interior = w_e[interior]  # (E_interior, 15)
     
-    # VECTORIZED: Compute all pairs at once
-    # Compute norms for all pairs
-    n1 = g1.norm(dim=1)  # (E_interior, 15)
-    n2 = g2.norm(dim=1)  # (E_interior, 15)
+    # CRITICAL FIX: Normalize gradients with CLAMPED norms to prevent zero penalties
+    # When gradients are tiny (~1e-6), their cosine is undefined
+    n1 = g1.norm(dim=1).clamp_min(1e-2)  # Clamp to prevent division issues
+    n2 = g2.norm(dim=1).clamp_min(1e-2)  # (E_interior, 15)
     
-    # Compute dot products for all pairs
-    dot_prod = (g1 * g2).sum(dim=1)  # (E_interior, 15)
+    # Normalize gradients  
+    g1_norm = g1 / n1.unsqueeze(1)  # (E_interior, 3, 15)
+    g2_norm = g2 / n2.unsqueeze(1)  # (E_interior, 3, 15)
     
-    # Compute cosine similarity for all pairs
-    cos_sim = dot_prod / (n1 * n2 + 1e-10)
+    # Compute cosine similarity between normalized gradients
+    cos_sim = (g1_norm * g2_norm).sum(dim=1)  # (E_interior, 15)
     
     # CRITICAL: Clamp cosine to prevent -inf
     cos_sim = torch.clamp(cos_sim, -1.0 + 1e-6, 1.0 - 1e-6)
@@ -184,10 +185,8 @@ def compute_edge_weights(d_v: torch.Tensor, edges: torch.Tensor, beta: float) ->
     # Element-wise product for each pair
     prod = d_i * d_j  # (E, 15)
     
-    # CRITICAL FIX: Clamp beta to prevent saturation
-    # This keeps gradients flowing even at high beta values
-    beta_clamped = min(beta, 12.0)  # Cap at 12 to prevent saturation
-    w_e = torch.sigmoid(-beta_clamped * prod)  # (E, 15)
+    # Sigmoid weight - no clamping since we have better scheduling now
+    w_e = torch.sigmoid(-beta * prod)  # (E, 15)
     
     return w_e
 
@@ -253,15 +252,14 @@ def compute_total_loss_corrected(f_values: torch.Tensor,
     result = {'total': total}
     
     if return_components:
-        # For monitoring
-        weight_sum = w_e.sum()
-        
+        # For monitoring - return actual w_e tensor for diagnostics
         result.update({
             'area': L_area,
             'adjacency': L_adj,
             'tv': L_tv,
             'area_fractions': area_frac,
-            'weight_sum': weight_sum,  # Monitor this - should drop by 2 orders of magnitude
+            'weight_sum': w_e,  # Return actual edge weights for monitoring
+            'weight_sum_scalar': w_e.sum(),  # Scalar sum for display
             'raw_adj_normalized': L_adj_raw  # This is the actual raw adjacency value
         })
     
