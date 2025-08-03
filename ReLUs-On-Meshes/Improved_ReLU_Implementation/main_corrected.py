@@ -40,9 +40,11 @@ def main():
     
     args = parser.parse_args()
     
-    # Create output directory
+    # Create output directory and checkpoint subdirectory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(exist_ok=True)
+    checkpoint_dir = output_dir / 'checkpoints'
+    checkpoint_dir.mkdir(exist_ok=True)
     
     # Set device
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
@@ -88,7 +90,8 @@ def main():
         vertices, faces, pinned_indices,
         use_coarse_to_fine=not args.no_coarse_to_fine,
         device=device,
-        iterations=args.iterations
+        iterations=args.iterations,
+        checkpoint_dir=checkpoint_dir
     )
     
     elapsed_time = time.time() - start_time

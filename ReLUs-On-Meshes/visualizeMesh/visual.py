@@ -290,10 +290,10 @@ def load_volume_tet_mesh_and_extract_surface(file_path):
     return vertices_np, faces_array
 # Here's how to use the function:
 if __name__ == "__main__":
-    vertices_np, faces_np = load_volume_tet_mesh_and_extract_surface("Piecewise Linear Mesh 3D\l1-poly-dat\hex\kitty\orig.tet.vtk")
+    vertices_np, faces_np = load_volume_tet_mesh_and_extract_surface("ReLUs-On-Meshes/Piecewise Linear Mesh 3D/l1-poly-dat/hex/dragon/orig.tet.vtk")
     
-    data=np.load("visualizeMesh\\final_mesh_and_values1.npz")
-    f_values=data["field_values"]
+    data=np.load("ReLUs-On-Meshes/dragon.npz")
+    f_values=data["f_values"]
  
     
     visualize_segmentation(
@@ -301,7 +301,7 @@ if __name__ == "__main__":
         faces_np=faces_np,
         f_values=f_values,
       
-        subdivisions=5,  # Adjust as needed
+        subdivisions=3,  # Adjust as needed
        
     )
     

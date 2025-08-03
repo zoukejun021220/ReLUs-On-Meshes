@@ -105,8 +105,8 @@ def adjacency_loss_corrected(grad15: torch.Tensor, edge2face: torch.Tensor,
     weight_sums = w_interior.sum(dim=0).clamp_min(1e-8)  # (15,)
     normalized_losses = pair_losses / weight_sums  # (15,)
     
-    # Total adjacency loss is sum over all pairs
-    L_adj_raw = normalized_losses.sum()
+    # Total adjacency loss is AVERAGE over all pairs (divide by 15)
+    L_adj_raw = normalized_losses.mean()  # Changed from sum() to mean()
     
     # Return both weighted and raw for monitoring
     if lambda_adj == 0:
@@ -130,10 +130,11 @@ def gated_tv_loss_corrected(d_v: torch.Tensor, edges: torch.Tensor,
     # Squared difference in field values
     diff_squared = (d_i - d_j).pow(2)
     
-    # CORRECTED: Use soft complement (1 - w_e)
-    # This gives smooth transition from 1 inside regions to 0 at boundaries
+    # CORRECTED: Use w_e*(1-w_e) for better gradient flow
+    # This peaks at boundaries (w_e=0.5) and vanishes both inside (w_e=0) and at converged boundaries (w_e=1)
     # Divide by number of channel pairs (15) to match adjacency scale
-    L_tv = ((1 - w_e) * diff_squared).sum() / d_v.shape[1]
+    gating = w_e * (1 - w_e)  # Maximum at boundaries, zero when converged
+    L_tv = (gating * diff_squared).sum() / d_v.shape[1]
     
     return lambda_tv * L_tv
 

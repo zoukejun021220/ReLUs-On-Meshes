@@ -281,9 +281,9 @@ def measure_planarity(vertices: np.ndarray, faces: np.ndarray,
                 if (labels[v1] == i and labels[v2] == j) or \
                    (labels[v1] == j and labels[v2] == i):
                     
-                    # Get gradients for this channel pair
-                    g1 = grad15[f1, :, pair_idx].cpu().numpy()
-                    g2 = grad15[f2, :, pair_idx].cpu().numpy()
+                    # Get gradients for this channel pair (need detach for tensors with grad)
+                    g1 = grad15[f1, :, pair_idx].detach().cpu().numpy()
+                    g2 = grad15[f2, :, pair_idx].detach().cpu().numpy()
                     
                     # Compute angle
                     cos_angle = np.dot(g1, g2) / (np.linalg.norm(g1) * np.linalg.norm(g2) + 1e-10)
