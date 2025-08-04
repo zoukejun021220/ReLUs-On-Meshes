@@ -139,9 +139,10 @@ def train_stage(config: TrainingConfig,
     lambda_adj_activated = False  # Track when to start using lambda_adj
     raw_adj_history = []  # Track history for plateau detection
     
-    # Checkpoint tracking
-    checkpoint_steps = [100, 500, 1000, 5000, 10000, 20000, 50000, 100000, 200000]
-    diagnostic_steps = [0, 100, 1000, 10000]  # Steps for detailed diagnostics
+    # Checkpoint tracking - aligned with new schedule stages
+    checkpoint_steps = [100, 500, 1000, 2000, 5000, 10000, 20000, 30000, 50000, 
+                       80000, 100000, 120000, 150000, 200000, 250000, 300000]
+    diagnostic_steps = [0, 100, 1000, 2000, 10000, 30000, 120000]  # At stage transitions
     
     # Training loop
     for step in range(config.steps):
@@ -291,6 +292,21 @@ def train_stage(config: TrainingConfig,
             
             # Save checkpoints at key steps
             if checkpoint_dir and step in checkpoint_steps and step <= config.steps:
+                # Calculate edge saturation metrics
+                edge_saturation_metrics = {}
+                if 'weight_sum' in loss_dict:
+                    w_e = loss_dict.get('weight_sum')
+                    if isinstance(w_e, torch.Tensor) and w_e.numel() > 1:
+                        w_e_cpu = w_e.detach().cpu()
+                        edge_saturation_metrics = {
+                            'w_e_max': w_e_cpu.max().item(),
+                            'w_e_mean': w_e_cpu.mean().item(),
+                            'w_e_min': w_e_cpu.min().item(),
+                            'w_e_gt_0.9': (w_e_cpu > 0.9).float().mean().item(),
+                            'w_e_lt_0.1': (w_e_cpu < 0.1).float().mean().item(),
+                            'w_e_middle': ((w_e_cpu >= 0.1) & (w_e_cpu <= 0.9)).float().mean().item()
+                        }
+                
                 checkpoint = {
                     'step': step,
                     'stage': stage_name,
@@ -304,8 +320,14 @@ def train_stage(config: TrainingConfig,
                         'raw_adj': raw_adj,
                         'weight_sum': loss_dict.get('weight_sum_scalar', 0).item(),
                         'beta': beta,
+                        'gamma': gamma if 'gamma' in locals() else 1.0,
                         'lambda_adj': lambda_adj,
-                        'area_fractions': loss_dict['area_fractions'].detach().cpu().numpy()
+                        'lambda_tv': lambda_tv if 'lambda_tv' in locals() else config.lambda_tv,
+                        'lambda_area': lambda_area if 'lambda_area' in locals() else config.lambda_area,
+                        'area_fractions': loss_dict['area_fractions'].detach().cpu().numpy(),
+                        'edge_saturation': edge_saturation_metrics,
+                        'lambda_adj_activated': lambda_adj_activated,
+                        'lambda_adj_frozen': lambda_adj_frozen
                     },
                     'config': config.__dict__
                 }
@@ -315,19 +337,35 @@ def train_stage(config: TrainingConfig,
             # Detailed diagnostics at key steps
             if step in diagnostic_steps:
                 print(f"\n{'='*60}")
-                print(f"DIAGNOSTIC at step {step}:")
+                print(f"DIAGNOSTIC at step {step} [{stage_name}]:")
                 print('='*60)
+                
+                # Stage parameters
+                print(f"Stage parameters:")
+                print(f"  Beta: {beta:.2f}, Gamma: {gamma if 'gamma' in locals() else 1.0:.1f}")
+                print(f"  Lambda_adj: {lambda_adj:.2f} (activated: {lambda_adj_activated}, frozen: {lambda_adj_frozen})")
+                print(f"  Lambda_tv: {lambda_tv if 'lambda_tv' in locals() else config.lambda_tv:.3f}")
+                print(f"  Lambda_area: {lambda_area if 'lambda_area' in locals() else config.lambda_area:.1f}")
                 
                 # Weight histogram analysis
                 w_e = loss_dict.get('weight_sum', 0)
                 if isinstance(w_e, torch.Tensor) and w_e.numel() > 1:
                     w_e_flat = w_e.detach().cpu().numpy().flatten()
-                    print(f"Weight distribution:")
+                    print(f"\nEdge weight distribution:")
                     print(f"  Min: {w_e_flat.min():.4f}")
                     print(f"  Mean: {w_e_flat.mean():.4f}")
                     print(f"  Max: {w_e_flat.max():.4f}")
                     print(f"  Near 0 (< 0.1): {(w_e_flat < 0.1).sum() / len(w_e_flat) * 100:.1f}%")
+                    print(f"  Middle (0.1-0.9): {((w_e_flat >= 0.1) & (w_e_flat <= 0.9)).sum() / len(w_e_flat) * 100:.1f}%")
                     print(f"  Near 1 (> 0.9): {(w_e_flat > 0.9).sum() / len(w_e_flat) * 100:.1f}%")
+                    
+                    # Check if bimodal
+                    if step > 30000:
+                        middle_ratio = ((w_e_flat >= 0.1) & (w_e_flat <= 0.9)).sum() / len(w_e_flat)
+                        if middle_ratio < 0.3:
+                            print(f"  ✓ BIMODAL distribution achieved!")
+                        else:
+                            print(f"  ⚠ Still not bimodal (middle: {middle_ratio*100:.1f}%)")
                 
                 # Gradient analysis
                 if f_values.grad is not None:
@@ -358,16 +396,14 @@ def train_stage(config: TrainingConfig,
             if step % 1000 == 0:
                 # Determine current stage for display
                 if config.steps >= 300000:
-                    if step < 3000:
+                    if step < 2000:
                         stage_name = "Warm-up"
-                    elif step < 50000:
-                        stage_name = "Stage A"
+                    elif step < 30000:
+                        stage_name = "TV-Consol"
                     elif step < 120000:
-                        stage_name = "Stage B"
-                    elif step < 200000:
-                        stage_name = "Stage C"
+                        stage_name = "Boundary"
                     else:
-                        stage_name = "Stage D"
+                        stage_name = "Fine-tune"
                 else:
                     stage_name = "Direct"
                 
@@ -377,17 +413,28 @@ def train_stage(config: TrainingConfig,
                       f"TV={loss_dict['tv'].item():.4f}")
                 
                 # CRITICAL: Monitor edge weights to see if boundaries are forming
-                if step % 1000 == 0 and 'weight_sum' in loss_dict:
+                if 'weight_sum' in loss_dict:
                     w_e = loss_dict.get('weight_sum')
                     if isinstance(w_e, torch.Tensor) and w_e.numel() > 1:
                         w_e_cpu = w_e.detach().cpu()
                         w_max = w_e_cpu.max().item()
                         w_mean = w_e_cpu.mean().item()
                         w_high = (w_e_cpu > 0.9).float().mean().item()
-                        print(f"  Edge weights: max={w_max:.3f}, mean={w_mean:.3f}, >0.9 ratio={w_high:.4f}")
+                        w_low = (w_e_cpu < 0.1).float().mean().item()
+                        w_middle = ((w_e_cpu >= 0.1) & (w_e_cpu <= 0.9)).float().mean().item()
                         
-                        if w_max < 0.8 and step > 20000:
-                            print("  ⚠️ WARNING: No boundaries forming (max w_e < 0.8)")
+                        print(f"  Edge weights: [0:{w_low:.1%} | 0.5:{w_middle:.1%} | 1:{w_high:.1%}] "
+                              f"(mean={w_mean:.3f}, γ={gamma if 'gamma' in locals() else 1.0:.0f})")
+                        
+                        # Check progress
+                        if step > 30000:
+                            if w_high > 0.1:
+                                print(f"  ✓ Boundaries forming ({w_high:.1%} saturated)")
+                            elif w_middle > 0.7:
+                                print(f"  ⚠ Still ambiguous ({w_middle:.1%} in middle)")
+                            
+                            if w_middle < 0.3:
+                                print(f"  ✓✓ BIMODAL achieved!")
                 
                 # Show important metrics - ensure we get the RIGHT raw value
                 if 'raw_adj_normalized' in loss_dict:
