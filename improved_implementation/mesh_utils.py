@@ -135,7 +135,7 @@ def cotan_weights(verts: Tensor, faces: Tensor) -> Tuple[Tensor, Tensor, Tensor]
     def cot(a, b):
         num = (a * b).sum(-1)
         den = torch.linalg.norm(torch.cross(a, b, dim=-1), dim=-1).clamp_min(1e-12)
-        return num / den
+        return (num / den).clamp(-10.0, 10.0)  # Clamp to avoid extreme values
     
     cot0 = cot(e1, e2)  # angle at v0
     cot1 = cot(e2, e0)  # angle at v1
@@ -153,6 +153,13 @@ def cotan_weights(verts: Tensor, faces: Tensor) -> Tuple[Tensor, Tensor, Tensor]
                      faces[:, 0], faces[:, 2],
                      faces[:, 1], faces[:, 0]], dim=1).reshape(-1)
     W = 0.5 * torch.cat([cot0, cot0, cot1, cot1, cot2, cot2], dim=0)
+    
+    # Filter out negative weights (can happen with obtuse angles)
+    # Keep only positive weights for stability
+    mask = W > 0
+    I = I[mask]
+    J = J[mask]
+    W = W[mask]
     
     return I.long(), J.long(), W
 

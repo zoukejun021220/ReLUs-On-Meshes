@@ -242,7 +242,7 @@ class MeshSegmentationTrainer:
                 
                 # Area fractions
                 if '_frac' in losses:
-                    frac_str = ", ".join([f"{f:.3f}" for f in losses['_frac'].cpu().numpy()])
+                    frac_str = ", ".join([f"{f:.3f}" for f in losses['_frac'].detach().cpu().numpy()])
                     print(f"  Area fractions: [{frac_str}]")
             
             # Save checkpoint
