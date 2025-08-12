@@ -53,3 +53,35 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Large files and checkpoints
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*_optimizer.pt
+*checkpoint*.pt
+*checkpoint*.npz
+
+# Large data files
+training_history.json
+*.json
+!config.json  # Keep config files
+
+# Mesh data files (already covered by *.vtk above)
+l1-poly-dat/
+
+# Any file over 50MB
+*.so
+*.dylib
+*.dll
+
+# Temporary and cache files
+tmp_*
+temp_*
+cache/
+.cache/
+
+# Results directories with large files
+results_improved/
+results/
