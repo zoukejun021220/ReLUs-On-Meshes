@@ -75,8 +75,8 @@ def optimization_sin_improved(
     print(f"Mesh normalized: center={center}, scale={scale:.4f}")
     
     # Convert data to torch
-    v = torch.from_numpy(vertices_norm).float().to(device)
-    f = torch.from_numpy(faces_np).long().to(device)
+    v = torch.from_numpy(vertices_norm.copy()).float().to(device)
+    f = torch.from_numpy(faces_np.copy()).long().to(device)
     
     # Build adjacency
     tri_adj = torch.from_numpy(build_triangle_adjacency(faces_np)).long().to(device)

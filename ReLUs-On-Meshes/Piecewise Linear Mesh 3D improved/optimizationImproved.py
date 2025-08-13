@@ -83,9 +83,9 @@ def optimization_improved(
     vert_edges = torch.from_numpy(build_vertex_edges(faces_np)).long().to(device)
     mesh_area = compute_face_areas(vertices_norm, faces_np).sum()
     
-    # Convert to torch
-    v = torch.from_numpy(vertices_norm).float().to(device)
-    f = torch.from_numpy(faces_np).long().to(device)
+    # Convert to torch (copy arrays to ensure they're writable)
+    v = torch.from_numpy(vertices_norm.copy()).float().to(device)
+    f = torch.from_numpy(faces_np.copy()).long().to(device)
     
     # Initialize parameters
     f_param = init_6channels_with_pins(len(vertices_norm), pinned_indices, device)

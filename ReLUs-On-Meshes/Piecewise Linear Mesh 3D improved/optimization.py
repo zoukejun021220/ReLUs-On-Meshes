@@ -74,8 +74,8 @@ def optimization(
     # ------------------------------------------------------------------
     # 2) Convert mesh to torch
     # ------------------------------------------------------------------
-    v = torch.from_numpy(vertices_np).float().to(device)
-    f = torch.from_numpy(faces_np).long().to(device)
+    v = torch.from_numpy(vertices_np.copy()).float().to(device)
+    f = torch.from_numpy(faces_np.copy()).long().to(device)
 
     # ------------------------------------------------------------------
     # 3) Initialize 6-channel field + pin mask

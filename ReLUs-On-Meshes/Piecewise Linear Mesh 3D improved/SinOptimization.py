@@ -55,8 +55,8 @@ def optimization(
     print(f"Using device: {device}")
 
     # Convert data to torch
-    v  = torch.from_numpy(vertices_np).float().to(device)
-    f  = torch.from_numpy(faces_np).long().to(device)
+    v  = torch.from_numpy(vertices_np.copy()).float().to(device)
+    f  = torch.from_numpy(faces_np.copy()).long().to(device)
 
     from collections import defaultdict
     from time import time
