@@ -1,20 +1,22 @@
 import numpy as np
 import math
-import pyvista as pv
-import vtk
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import time
+import argparse
 
 from Meshsetup import create_icosphere_mesh, load_volume_tet_mesh_and_extract_surface
 from MeshParamCalculationImproved import find_axis_vertices_improved
 from optimizationImproved import optimization_improved
 from SinOptimizationImproved import optimization_sin_improved
-from visualization import visualize_segmentation
 
 
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Run mesh optimization')
+    parser.add_argument('--visualize', action='store_true', help='Enable visualization (requires display)')
+    args = parser.parse_args()
     total_start_time = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -130,15 +132,25 @@ def main():
         )
     
     # Step 4: Visualize the result
-    print("\nVisualizing result...")
-    visualize_segmentation(
-        vertices_np=vertices_np,
-        faces_np=faces_np,
-        f_values=f_optimized,
-        pinned_indices=pinned_indices,
-        region_names=region_names,
-        subdivisions=3
-    )
+    if args.visualize:
+        print("\nVisualizing result...")
+        try:
+            import pyvista as pv
+            import vtk
+            from visualization import visualize_segmentation
+            visualize_segmentation(
+                vertices_np=vertices_np,
+                faces_np=faces_np,
+                f_values=f_optimized,
+                pinned_indices=pinned_indices,
+                region_names=region_names,
+                subdivisions=3
+            )
+        except ImportError as e:
+            print(f"Warning: Could not import visualization libraries: {e}")
+            print("Skipping visualization.")
+    else:
+        print("\nVisualization skipped (use --visualize flag to enable)")
     
     # Print summary statistics
     print("\nOptimization Summary:")
