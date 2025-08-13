@@ -38,12 +38,13 @@ def optimization_sin_improved(
     enable_early_stopping: bool = True,
     patience: int = 2000,
     print_every: int = 100,
-    save_path: str = "final_mesh_and_values.npz",
+    save_path: str = "optimized_mesh_and_values.npz",
     use_anchored_loss: bool = True,
     use_soft_pairs_loss: bool = False,
     use_free_planes_loss: bool = False,
     checkpoint_dir: str = "checkpoints",
     checkpoint_interval: int = 500,
+    input_filename: Optional[str] = None,
 ):
     """
     Improved sinusoidal optimizer with proper plane_offsets optimization.
@@ -371,6 +372,12 @@ def optimization_sin_improved(
     # Save results
     final_mesh = vertices_np  # Keep original mesh
     final_field_values = f_param.detach().cpu().numpy()
+    
+    # Save with optimized_ prefix
+    if input_filename:
+        base_name = os.path.basename(input_filename)
+        name_without_ext = os.path.splitext(base_name)[0]
+        save_path = f"optimized_{name_without_ext}.npz"
     
     # Save with additional metadata
     final_save_dict = {

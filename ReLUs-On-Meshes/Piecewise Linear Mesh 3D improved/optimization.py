@@ -33,9 +33,10 @@ def optimization(
     enable_early_stopping: bool = False,
     patience: int = 2000,
     print_every: int = 100,
-    save_path: str = "final_mesh_and_values.npz",
+    save_path: str = "optimized_mesh_and_values.npz",
     shock_steps=1000,
-    refine_steps=9000):
+    refine_steps=9000,
+    input_filename: Optional[str] = None):
     """
     Shock-therapy optimizer that does repeated short "shock" phases
     and longer "refine" phases
@@ -218,7 +219,13 @@ def optimization(
     final_field_values = f_param.detach().cpu().numpy()
     final_mesh = vertices_np  # same as input, if not deformed
 
-    # Save
+    # Save with optimized_ prefix
+    if input_filename:
+        import os
+        base_name = os.path.basename(input_filename)
+        name_without_ext = os.path.splitext(base_name)[0]
+        save_path = f"optimized_{name_without_ext}.npz"
+    
     np.savez_compressed(save_path, vertices=vertices_np,faces=faces_np, f_values=final_field_values)
     print(f"Final mesh and field values saved to {save_path}")
 

@@ -34,8 +34,9 @@ def optimization(
     enable_early_stopping: bool = True,
     patience: int = 2000,
     print_every: int = 100,
-    save_path: str = "final_mesh_and_values.npz",
-    pinned_axes=None  # Path where we will save the mesh and field values
+    save_path: str = "optimized_mesh_and_values.npz",
+    pinned_axes=None,  # Path where we will save the mesh and field values
+    input_filename: Optional[str] = None
 ):
     """
     A faster-converging optimizer using:
@@ -211,6 +212,13 @@ def optimization(
     # After optimization, save the final mesh and its scalar field values
     final_mesh = vertices_np  # The final mesh
     final_field_values = f_param.detach().cpu().numpy()  # The final scalar field values
+
+    # Save with optimized_ prefix
+    if input_filename:
+        import os
+        base_name = os.path.basename(input_filename)
+        name_without_ext = os.path.splitext(base_name)[0]
+        save_path = f"optimized_{name_without_ext}.npz"
 
     # Save the final mesh and scalar field values to a .npz file
     np.savez_compressed(save_path, mesh=final_mesh, face=faces_np, f_values=final_field_values)

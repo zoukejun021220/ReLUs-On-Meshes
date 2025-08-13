@@ -34,9 +34,8 @@ def main():
     # vertices_np, faces_np = create_icosphere_mesh(target_points=target_points, radius=1.0)
     
     # Option 2: Load from VTK file
-    vertices_np, faces_np = load_volume_tet_mesh_and_extract_surface(
-        "/home/kejunzou/Projects/ReLUs on Meshes/ReLUs-On-Meshes/Piecewise Linear Mesh 3D improved/l1-poly-dat/hex/kitty/orig.tet.vtk"
-    )
+    input_filename = "/home/kejunzou/Projects/ReLUs on Meshes/ReLUs-On-Meshes/Piecewise Linear Mesh 3D improved/l1-poly-dat/hex/kitty/orig.tet.vtk"
+    vertices_np, faces_np = load_volume_tet_mesh_and_extract_surface(input_filename)
     
     elapsed = time.time() - start_time
     print(f"Loaded mesh in {elapsed:.2f}s with {len(vertices_np)} vertices and {len(faces_np)} faces")
@@ -92,6 +91,7 @@ def main():
         'use_free_planes_loss': use_free_planes,  # Use free planes with learnable normals
         'checkpoint_dir': 'checkpoints',
         'checkpoint_interval': 5000,
+        'input_filename': input_filename,
     }
     
     if use_improved_optimizer:

@@ -32,7 +32,7 @@ def optimization_improved(
     enable_early_stopping: bool = True,
     patience: int = 2000,
     print_every: int = 100,
-    save_path: str = "final_mesh_and_values.npz",
+    save_path: str = "optimized_mesh_and_values.npz",
     shock_steps: int = 1000,
     refine_steps: int = 4000,
     use_anchored_loss: bool = True,
@@ -40,6 +40,7 @@ def optimization_improved(
     use_free_planes_loss: bool = False,
     checkpoint_dir: str = "checkpoints",
     checkpoint_interval: int = 500,
+    input_filename: Optional[str] = None,
 ):
     """
     Improved optimizer with proper plane_offsets optimization and staged training.
@@ -326,7 +327,12 @@ def optimization_improved(
     final_field_values = f_param.detach().cpu().numpy()
     final_mesh = vertices_np  # Keep original mesh
     
-    # Save final results
+    # Save final results with optimized_ prefix
+    if input_filename:
+        base_name = os.path.basename(input_filename)
+        name_without_ext = os.path.splitext(base_name)[0]
+        save_path = f"optimized_{name_without_ext}.npz"
+    
     final_save_dict = {
         'vertices': vertices_np,
         'faces': faces_np,

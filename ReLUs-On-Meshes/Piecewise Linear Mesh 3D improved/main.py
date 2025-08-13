@@ -26,7 +26,8 @@ def main():
     print(f"Creating icosphere mesh with target of {target_points} points...")
     start_time = time.time()
     #vertices_np, faces_np = create_icosphere_mesh(target_points=target_points, radius=1.0)
-    vertices_np, faces_np = load_volume_tet_mesh_and_extract_surface("Piecewise Linear Mesh 3D\l1-poly-dat\hex\kitty\orig.tet.vtk")
+    input_filename = "Piecewise Linear Mesh 3D\l1-poly-dat\hex\kitty\orig.tet.vtk"
+    vertices_np, faces_np = load_volume_tet_mesh_and_extract_surface(input_filename)
     plane_offsets = nn.Parameter(torch.zeros(6, device=device))
     elapsed = time.time() - start_time
     print(f"Created sphere mesh in {elapsed:.2f}s with {len(vertices_np)} vertices and {len(faces_np)} faces")
@@ -70,9 +71,7 @@ def main():
         lr_max_factor=10,
         lr_min_factor=0.05,
         print_every=100,
-        
-
-
+        input_filename=input_filename
     )
     
     # Step 4: Visualize the result with softmax instead of sigmoid
