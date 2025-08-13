@@ -1,6 +1,5 @@
 import numpy as np
 import math
-import pyvista as pv
 
 def create_icosphere_mesh(target_points=None, subdivisions=2, radius=1.0):
     """
@@ -163,6 +162,12 @@ def load_volume_tet_mesh_and_extract_surface(file_path):
         vertices_np (np.ndarray): Array of shape (N, 3) containing surface vertex coordinates.
         faces_np (np.ndarray): Array of shape (F, 3) containing triangulated surface faces (vertex indices).
     """
+    # Import pyvista only when needed
+    try:
+        import pyvista as pv
+    except ImportError:
+        raise ImportError("PyVista is required to load VTK files. Install it with: pip install pyvista")
+    
     # 1) Read mesh from file
     mesh = pv.read(file_path)  # PyVista automatically guesses file type (VTK, VTU, etc.)
 

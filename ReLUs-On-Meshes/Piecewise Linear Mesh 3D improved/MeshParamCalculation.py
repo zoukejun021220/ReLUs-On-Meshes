@@ -1,7 +1,5 @@
 import numpy as np
 import math
-import pyvista as pv
-import vtk
 import torch
 import torch.nn as nn
 
