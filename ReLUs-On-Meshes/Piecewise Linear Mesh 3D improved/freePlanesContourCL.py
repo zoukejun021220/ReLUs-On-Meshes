@@ -23,7 +23,7 @@ def contour_alignment_free_planes(
     pin_weight: float = 10.0,     # Weight for pinning constraint
 ) -> torch.Tensor:
     """
-    Contour alignment with learnable free planes (not axis-aligned) but with pinned anchor points.
+    Vectorized contour alignment with learnable free planes (not axis-aligned) but with pinned anchor points.
     
     Similar to anchored planes but learns plane orientations instead of using fixed axes:
     - Plane for channel c: n_c^T x + b_c = 0 (learnable n_c and b_c)
@@ -99,75 +99,84 @@ def contour_alignment_free_planes(
     start_indices = change_indices[internal_indices]
     edge_idx = sorted_edges[start_indices]  # (E, 2)
     
-    # Get edge vertices
+    # Get edge vertices and field values
     v0 = vertices[edge_idx[:, 0]]  # (E, 3)
     v1 = vertices[edge_idx[:, 1]]  # (E, 3)
-    edge_midpoints = 0.5 * (v0 + v1)  # (E, 3)
-    
-    # Get field values at edge endpoints
     f0 = f_values[edge_idx[:, 0]]  # (E, C)
     f1 = f_values[edge_idx[:, 1]]  # (E, C)
     
-    # Compute all pairwise crossings
-    total_loss = 0.0
-    total_weight = 0.0
+    # Create channel pair indices
+    i_indices, j_indices = torch.triu_indices(C, C, offset=1, device=device)
+    num_pairs = len(i_indices)
     
-    # Process all channel pairs
-    for i in range(C):
-        for j in range(i+1, C):
-            # Field difference at endpoints
-            diff0 = f0[:, i] - f0[:, j]  # (E,)
-            diff1 = f1[:, i] - f1[:, j]  # (E,)
-            
-            # Edge crossing weight (sigmoid of negative product)
-            crossing_weight = torch.sigmoid(-beta_edge * diff0 * diff1)  # (E,)
-            
-            # Skip if no significant crossings
-            if crossing_weight.sum() < 1e-3:
-                continue
-            
-            # Pairwise plane parameters (derived from channel planes)
-            # Plane (i,j): (n_i - n_j)^T x + (b_i - b_j) = 0
-            plane_normal_ij = plane_normals_normalized[i] - plane_normals_normalized[j]  # (3,)
-            plane_offset_ij = plane_offsets[i] - plane_offsets[j]  # scalar
-            
-            # Normalize the pairwise plane normal
-            plane_normal_ij = F.normalize(plane_normal_ij, p=2, dim=0)
-            
-            # Linear interpolation parameter for crossing point
-            # f_i(t) - f_j(t) = 0, where f(t) = (1-t)*f0 + t*f1
-            t = diff0 / (diff0 - diff1 + epsilon)  # (E,)
-            t = t.clamp(0.0, 1.0)
-            
-            # Interpolated crossing points
-            crossing_points = (1 - t).unsqueeze(1) * v0 + t.unsqueeze(1) * v1  # (E, 3)
-            
-            # Point-to-plane distances
-            distances = torch.abs(
-                torch.sum(crossing_points * plane_normal_ij, dim=1) + 
-                plane_offset_ij
-            )  # (E,)
-            
-            # Robust weighting (Cauchy/Lorentzian)
-            if robust_weight:
-                # Cauchy weight: w = 1 / (1 + (d/scale)^2)
-                scale = distances.detach().median() + epsilon
-                robust_w = 1.0 / (1.0 + (distances / scale) ** 2)
-                final_weight = crossing_weight * robust_w
-            else:
-                final_weight = crossing_weight
-            
-            # Edge length normalization
-            edge_lengths = (v1 - v0).norm(dim=1)
-            length_weight = edge_lengths / (edge_lengths.mean() + epsilon)
-            final_weight = final_weight * length_weight.clamp(0.5, 2.0)
-            
-            # Accumulate weighted loss
-            pair_loss = (final_weight * distances).sum()
-            pair_weight = final_weight.sum()
-            
-            total_loss += pair_loss
-            total_weight += pair_weight
+    # Vectorized computation for all channel pairs
+    # Field differences at endpoints for all pairs
+    diff0 = f0[:, i_indices] - f0[:, j_indices]  # (E, num_pairs)
+    diff1 = f1[:, i_indices] - f1[:, j_indices]  # (E, num_pairs)
+    
+    # Edge crossing weights for all pairs
+    crossing_weights = torch.sigmoid(-beta_edge * diff0 * diff1)  # (E, num_pairs)
+    
+    # Filter out pairs with negligible crossings
+    significant_pairs = crossing_weights.sum(dim=0) > 1e-3
+    if not significant_pairs.any():
+        return torch.tensor(0., device=device, dtype=dtype)
+    
+    # Work only with significant pairs
+    i_indices = i_indices[significant_pairs]
+    j_indices = j_indices[significant_pairs]
+    diff0 = diff0[:, significant_pairs]
+    diff1 = diff1[:, significant_pairs]
+    crossing_weights = crossing_weights[:, significant_pairs]
+    num_active_pairs = len(i_indices)
+    
+    # Pairwise plane parameters (vectorized)
+    plane_normals_i = plane_normals_normalized[i_indices]  # (num_active_pairs, 3)
+    plane_normals_j = plane_normals_normalized[j_indices]  # (num_active_pairs, 3)
+    plane_normals_ij = plane_normals_i - plane_normals_j  # (num_active_pairs, 3)
+    plane_normals_ij = F.normalize(plane_normals_ij, p=2, dim=1)
+    
+    plane_offsets_ij = plane_offsets[i_indices] - plane_offsets[j_indices]  # (num_active_pairs,)
+    
+    # Linear interpolation parameters for all pairs
+    t = diff0 / (diff0 - diff1 + epsilon)  # (E, num_active_pairs)
+    t = t.clamp(0.0, 1.0)
+    
+    # Compute crossing points for all edges and pairs
+    # Expand vertices for broadcasting
+    v0_expanded = v0.unsqueeze(1)  # (E, 1, 3)
+    v1_expanded = v1.unsqueeze(1)  # (E, 1, 3)
+    t_expanded = t.unsqueeze(2)  # (E, num_active_pairs, 1)
+    
+    crossing_points = (1 - t_expanded) * v0_expanded + t_expanded * v1_expanded  # (E, num_active_pairs, 3)
+    
+    # Point-to-plane distances for all pairs (batch computation)
+    # crossing_points: (E, num_active_pairs, 3)
+    # plane_normals_ij: (num_active_pairs, 3)
+    distances = torch.abs(
+        torch.einsum('epd,pd->ep', crossing_points, plane_normals_ij) + 
+        plane_offsets_ij.unsqueeze(0)
+    )  # (E, num_active_pairs)
+    
+    # Robust weighting (vectorized)
+    if robust_weight:
+        # Compute scales per pair
+        scales = distances.detach().median(dim=0).values + epsilon  # (num_active_pairs,)
+        robust_w = 1.0 / (1.0 + (distances / scales.unsqueeze(0)) ** 2)
+        final_weights = crossing_weights * robust_w
+    else:
+        final_weights = crossing_weights
+    
+    # Edge length normalization (vectorized)
+    edge_lengths = (v1 - v0).norm(dim=1)  # (E,)
+    mean_length = edge_lengths.mean()
+    length_weights = (edge_lengths / (mean_length + epsilon)).clamp(0.5, 2.0)
+    final_weights = final_weights * length_weights.unsqueeze(1)
+    
+    # Compute total loss
+    weighted_distances = final_weights * distances
+    total_loss = weighted_distances.sum()
+    total_weight = final_weights.sum()
     
     # Normalize by total weight
     if total_weight > epsilon:
@@ -175,77 +184,80 @@ def contour_alignment_free_planes(
     else:
         loss = torch.tensor(0., device=device, dtype=dtype)
     
-    # Add regularizers to keep plane configuration stable
+    # Add regularizers (vectorized)
     # L_opp: Opposite pairs should be opposite
-    opp_pairs = [(0, 1), (2, 3), (4, 5)]  # (Top,Bottom), (Front,Back), (Right,Left)
-    L_opp = 0.0
-    for a, b in opp_pairs:
-        if a < C and b < C:  # Check bounds
-            L_opp += (plane_normals_normalized[a] + plane_normals_normalized[b]).pow(2).sum()
-            L_opp += (plane_offsets[a] + plane_offsets[b]).pow(2)
+    opp_pairs = torch.tensor([(0, 1), (2, 3), (4, 5)], device=device)
+    valid_opp = (opp_pairs < C).all(dim=1)
+    if valid_opp.any():
+        opp_pairs = opp_pairs[valid_opp]
+        L_opp = (plane_normals_normalized[opp_pairs[:, 0]] + 
+                 plane_normals_normalized[opp_pairs[:, 1]]).pow(2).sum()
+        L_opp += (plane_offsets[opp_pairs[:, 0]] + 
+                  plane_offsets[opp_pairs[:, 1]]).pow(2).sum()
+    else:
+        L_opp = torch.tensor(0., device=device, dtype=dtype)
     
-    # L_orth: Orthogonal pairs should be orthogonal
-    # Top/Bottom (0,1) should be orthogonal to the other 4 directions
-    orth_pairs = [(0, 2), (0, 3), (0, 4), (0, 5), 
-                  (1, 2), (1, 3), (1, 4), (1, 5),
-                  (2, 4), (2, 5), (3, 4), (3, 5)]  # X vs Y, X vs Z, Y vs Z
-    L_orth = 0.0
-    for a, b in orth_pairs:
-        if a < C and b < C:  # Check bounds
-            L_orth += (plane_normals_normalized[a] @ plane_normals_normalized[b]).pow(2)
+    # L_orth: Orthogonal pairs should be orthogonal (vectorized)
+    orth_pairs = torch.tensor([
+        (0, 2), (0, 3), (0, 4), (0, 5),
+        (1, 2), (1, 3), (1, 4), (1, 5),
+        (2, 4), (2, 5), (3, 4), (3, 5)
+    ], device=device)
+    valid_orth = (orth_pairs < C).all(dim=1)
+    if valid_orth.any():
+        orth_pairs = orth_pairs[valid_orth]
+        dot_products = torch.einsum('nd,nd->n',
+            plane_normals_normalized[orth_pairs[:, 0]],
+            plane_normals_normalized[orth_pairs[:, 1]]
+        )
+        L_orth = dot_products.pow(2).sum()
+    else:
+        L_orth = torch.tensor(0., device=device, dtype=dtype)
     
     # Add regularizers with small weights
     loss = loss + 0.01 * L_opp + 0.01 * L_orth
     
-    # Add pinning constraint loss
-    # Ensure pinned vertices have maximum value for their assigned channel
-    pinning_loss = 0.0
-    for c, pin_idx in enumerate(pinned_indices):
-        if pin_idx < V:  # Valid vertex index
-            # Channel c should be maximum at pinned vertex
-            f_pin = f_values[pin_idx]  # (C,)
-            
-            # Soft constraint: channel c should dominate at its pinned vertex
-            # Use log-sum-exp for numerical stability
-            max_val = f_pin.max()
-            log_sum_exp = torch.log(torch.exp(f_pin - max_val).sum()) + max_val
-            log_softmax_c = f_pin[c] - log_sum_exp
-            
-            # Negative log probability (want to maximize probability)
-            pinning_loss = pinning_loss - log_softmax_c
-    
-    # Normalize by number of channels
-    pinning_loss = pinning_loss / C
+    # Pinning constraint loss (vectorized)
+    pinning_loss = torch.tensor(0., device=device, dtype=dtype)
+    valid_pins = [idx for idx in pinned_indices if idx < V]
+    if valid_pins:
+        f_pins = f_values[valid_pins]  # (num_valid_pins, C)
+        pin_channels = torch.arange(len(valid_pins), device=device)
+        
+        # Compute log softmax for all pinned vertices
+        log_softmax = F.log_softmax(f_pins, dim=1)
+        # Extract the log probabilities for the pinned channels
+        log_probs = log_softmax[pin_channels, pin_channels[:len(f_pins)]]
+        pinning_loss = -log_probs.mean()
     
     # Combine losses
     total_loss = loss + pin_weight * pinning_loss
     
-    # Optional triple point regularization
+    # Optional triple point regularization (vectorized)
     if include_triples:
-        # Find vertices with high boundary presence
-        vertex_scores = torch.zeros(V, device=device)
+        # Vectorized boundary score computation
+        # Create masks for all channel pairs
+        i_all, j_all = torch.triu_indices(C, C, offset=1, device=device)
         
-        # Accumulate boundary scores
-        for i in range(C):
-            for j in range(i+1, C):
-                diff0 = f_values[:, i] - f_values[:, j]
-                # Soft boundary indicator
-                boundary_prob = torch.sigmoid(-beta_edge * diff0.abs())
-                vertex_scores += boundary_prob
+        # Compute differences for all vertices and channel pairs
+        f_expanded = f_values.unsqueeze(2)  # (V, C, 1)
+        diffs = f_expanded[:, i_all, 0] - f_expanded[:, j_all, 0]  # (V, num_pairs)
         
-        # Triple points have high scores (3+ boundaries)
+        # Boundary probabilities
+        boundary_probs = torch.sigmoid(-beta_edge * diffs.abs())  # (V, num_pairs)
+        vertex_scores = boundary_probs.sum(dim=1)  # (V,)
+        
+        # Triple points have high scores
         triple_mask = vertex_scores > 2.5
         
         if triple_mask.any():
-            # At triple points, encourage equal channel mixing
             f_triple = f_values[triple_mask]  # (T, C)
             probs = F.softmax(f_triple, dim=1)
             
-            # Entropy regularization (encourage uniform distribution)
+            # Entropy regularization
             entropy = -(probs * (probs + epsilon).log()).sum(dim=1)
             max_entropy = torch.log(torch.tensor(float(C), device=device))
             
-            # Penalty for low entropy (non-uniform distribution)
             triple_loss = (max_entropy - entropy).mean()
             total_loss = total_loss + 0.1 * triple_loss
     
