@@ -219,19 +219,20 @@ def contour_alignment_free_planes(
     
     # Pinning constraint loss (vectorized)
     pinning_loss = torch.tensor(0., device=device, dtype=dtype)
-    valid_pins = [idx for idx in pinned_indices if idx < V]
+    valid_pins = [(c, idx) for c, idx in enumerate(pinned_indices) if idx < V]
     if valid_pins:
-        f_pins = f_values[valid_pins]  # (num_valid_pins, C)
-        pin_channels = torch.arange(len(valid_pins), device=device)
+        channels, indices = zip(*valid_pins)
+        f_pins = f_values[list(indices)]  # (num_valid_pins, C)
         
         # Compute log softmax for all pinned vertices
         log_softmax = F.log_softmax(f_pins, dim=1)
         # Extract the log probabilities for the pinned channels
-        log_probs = log_softmax[pin_channels, pin_channels[:len(f_pins)]]
+        log_probs = log_softmax[range(len(channels)), channels]
         pinning_loss = -log_probs.mean()
     
-    # Combine losses
-    total_loss = loss + pin_weight * pinning_loss
+    # Return contour loss and pinning loss separately
+    # The caller can decide how to weight them
+    contour_loss_only = loss
     
     # Optional triple point regularization (vectorized)
     if include_triples:
@@ -259,9 +260,34 @@ def contour_alignment_free_planes(
             max_entropy = torch.log(torch.tensor(float(C), device=device))
             
             triple_loss = (max_entropy - entropy).mean()
-            total_loss = total_loss + 0.1 * triple_loss
+            contour_loss_only = contour_loss_only + 0.1 * triple_loss
     
-    return total_loss
+    # Return both losses separately to allow proper weighting
+    # The pinning loss should not be scaled by lambda_c
+    return contour_loss_only, pinning_loss
+
+
+def contour_alignment_free_planes_combined(
+    vertices: torch.Tensor,
+    faces: torch.Tensor,
+    f_values: torch.Tensor,
+    plane_normals: nn.Parameter,
+    plane_offsets: nn.Parameter,
+    pinned_indices: list,
+    beta_edge: float = 10.0,
+    include_triples: bool = False,
+    epsilon: float = 1e-6,
+    robust_weight: bool = True,
+    pin_weight: float = 10.0,
+) -> torch.Tensor:
+    """
+    Backward compatible wrapper that returns combined loss.
+    """
+    contour_loss, pinning_loss = contour_alignment_free_planes(
+        vertices, faces, f_values, plane_normals, plane_offsets, pinned_indices,
+        beta_edge, include_triples, epsilon, robust_weight, pin_weight
+    )
+    return contour_loss + pin_weight * pinning_loss
 
 
 def init_free_plane_normals(n_channels: int, device: torch.device, 

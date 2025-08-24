@@ -214,10 +214,11 @@ def optimization_sin_improved(
             # Contour loss
             if lambda_c_now > 0:
                 if use_free_planes_loss:
-                    contour_loss = contour_fn(
+                    contour_loss, pinning_loss = contour_fn(
                         v, f, f_param, plane_normals, plane_offsets, pinned_indices,
                         beta_edge=beta_now, include_triples=(it > n_iters - 5000)
                     )
+                    pin_weight = 10.0  # Fixed weight for pinning
                 elif use_soft_pairs_loss:
                     contour_loss = contour_fn(
                         v, f, f_param, pinned_axes_torch, plane_offsets,
@@ -242,9 +243,16 @@ def optimization_sin_improved(
             area_loss, area_fracs = area_balance_loss_optimized(v, f, f_param, beta_now, mesh_area)
             
             # Total loss
-            total = (lambda_c_now * contour_loss +
-                    lambda_smooth * smooth_loss +
-                    lambda_a_now * area_loss)
+            if use_free_planes_loss and lambda_c_now > 0:
+                # For free planes, add pinning loss separately (not scaled by lambda_c)
+                total = (lambda_c_now * contour_loss +
+                        lambda_smooth * smooth_loss +
+                        lambda_a_now * area_loss +
+                        pin_weight * pinning_loss)
+            else:
+                total = (lambda_c_now * contour_loss +
+                        lambda_smooth * smooth_loss +
+                        lambda_a_now * area_loss)
         
         # Backward pass
         scaler.scale(total).backward()

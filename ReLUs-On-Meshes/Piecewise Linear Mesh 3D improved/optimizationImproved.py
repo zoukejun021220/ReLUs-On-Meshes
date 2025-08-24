@@ -144,10 +144,13 @@ def optimization_improved(
         """Helper to compute loss with current parameters."""
         if use_free_planes_loss:
             # Use free planes loss with learnable normals
-            contour_loss = contour_fn(
+            # Get separate contour and pinning losses
+            contour_loss, pinning_loss = contour_fn(
                 v, f, f_param, plane_normals, plane_offsets, pinned_indices,
                 beta_edge=beta, include_triples=include_triples
             )
+            # Add pinning loss directly without lambda_c scaling
+            pin_weight = 10.0  # Fixed weight for pinning
         elif use_soft_pairs_loss:
             # Use soft pairs loss
             contour_loss = contour_fn(
@@ -173,16 +176,28 @@ def optimization_improved(
         smooth_loss = smoothness_loss_optimized(f_param, vert_edges)
         area_loss, area_fracs = area_balance_loss_optimized(v, f, f_param, beta, mesh_area)
         
-        total_loss = (lambda_c * contour_loss +
-                     lambda_smooth * smooth_loss +
-                     lambda_a * area_loss)
+        if use_free_planes_loss:
+            # For free planes, add pinning loss separately (not scaled by lambda_c)
+            total_loss = (lambda_c * contour_loss +
+                         lambda_smooth * smooth_loss +
+                         lambda_a * area_loss +
+                         pin_weight * pinning_loss)
+        else:
+            total_loss = (lambda_c * contour_loss +
+                         lambda_smooth * smooth_loss +
+                         lambda_a * area_loss)
         
-        return total_loss, {
+        components = {
             'contour': contour_loss.item() if lambda_c > 0 else 0.0,
             'smoothness': smooth_loss.item(),
             'area_balance': area_loss.item(),
             'total': total_loss.item()
         }
+        
+        if use_free_planes_loss:
+            components['pinning'] = pinning_loss.item()
+        
+        return total_loss, components
     
     # Training loop with stages
     for step in range(1, n_iters + 1):
@@ -243,13 +258,18 @@ def optimization_improved(
         
         # Logging
         if (step == 1) or (step % print_every == 0) or (step == n_iters):
-            print(
+            log_msg = (
                 f"[{stage}] step {step}/{n_iters} "
                 f"loss={loss_val:.3e} contour={comp['contour']:.3e} "
                 f"smooth={comp['smoothness']:.3e} area={comp['area_balance']:.3e} "
+            )
+            if 'pinning' in comp:
+                log_msg += f"pinning={comp['pinning']:.3e} "
+            log_msg += (
                 f"β={beta:.1f} λc={lambda_c:.2f} λa={lambda_a:.2f} lr={lr:.2e} "
                 f"offsets_norm={plane_offsets.norm().item():.3f}"
             )
+            print(log_msg)
             history.append({
                 'step': step,
                 'stage': stage,
