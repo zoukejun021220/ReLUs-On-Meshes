@@ -107,8 +107,11 @@ def contour_alignment_free_planes_pairwise(
     f0 = f_values[edge_idx[:, 0]]  # (E, C)
     f1 = f_values[edge_idx[:, 1]]  # (E, C)
     
-    # Create channel pair indices
-    i_indices, j_indices = torch.triu_indices(C, C, offset=1, device=device)
+    # Create channel pair indices (excluding opposite pairs)
+    from channelPairsConfig import get_valid_channel_pairs
+    i_indices, j_indices = get_valid_channel_pairs(C)
+    i_indices = i_indices.to(device)
+    j_indices = j_indices.to(device)
     num_pairs = len(i_indices)
     
     # Vectorized computation for all channel pairs
@@ -260,12 +263,13 @@ def init_free_plane_normals_pairwise(n_channels: int, device: torch.device,
         init_scale: Scale of random initialization
         
     Returns:
-        plane_normals: (num_pairs, 3) parameter tensor where num_pairs = C*(C-1)/2
+        plane_normals: (num_pairs, 3) parameter tensor where num_pairs = 12 for 6 channels
     """
-    num_pairs = n_channels * (n_channels - 1) // 2
+    from channelPairsConfig import get_num_valid_pairs
+    num_pairs = get_num_valid_pairs(n_channels)
     
     if n_channels == 6:
-        # Initialize with some reasonable directions for 15 channel pairs
+        # Initialize with some reasonable directions for 12 valid channel pairs
         # We'll use a combination of axis-aligned and diagonal directions
         init_normals = []
         
@@ -302,6 +306,7 @@ def init_free_plane_offsets_pairwise(n_channels: int, device: torch.device,
     Returns:
         plane_offsets: (num_pairs,) parameter tensor
     """
-    num_pairs = n_channels * (n_channels - 1) // 2
+    from channelPairsConfig import get_num_valid_pairs
+    num_pairs = get_num_valid_pairs(n_channels)
     init_offsets = torch.randn(num_pairs, device=device) * init_scale
     return nn.Parameter(init_offsets)

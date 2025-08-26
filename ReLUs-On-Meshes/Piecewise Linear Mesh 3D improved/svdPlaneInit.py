@@ -31,7 +31,11 @@ def svd_init_pairwise_planes(
         plane_offsets: (num_pairs,) initialized plane offsets
     """
     V, C = f_values.shape
-    num_pairs = C * (C - 1) // 2
+    
+    # Import valid pairs configuration
+    from channelPairsConfig import get_valid_channel_pairs, get_num_valid_pairs
+    i_indices, j_indices = get_valid_channel_pairs(C)
+    num_pairs = get_num_valid_pairs(C)
     
     # Find channel assignments based on max value
     channel_assignments = torch.argmax(f_values, dim=1)  # (V,)
@@ -40,10 +44,8 @@ def svd_init_pairwise_planes(
     plane_normals_list = []
     plane_offsets_list = []
     
-    # Create channel pair indices
-    pair_idx = 0
-    for i in range(C):
-        for j in range(i + 1, C):
+    # Process each valid channel pair
+    for pair_idx, (i, j) in enumerate(zip(i_indices.tolist(), j_indices.tolist())):
             # Find vertices where channel i or j dominates
             mask_i = channel_assignments == i
             mask_j = channel_assignments == j
@@ -99,7 +101,6 @@ def svd_init_pairwise_planes(
             
             plane_normals_list.append(normal)
             plane_offsets_list.append(offset if isinstance(offset, torch.Tensor) else torch.tensor(offset, device=device, dtype=vertices.dtype))
-            pair_idx += 1
     
     # Stack into tensors
     plane_normals = torch.stack(plane_normals_list, dim=0)

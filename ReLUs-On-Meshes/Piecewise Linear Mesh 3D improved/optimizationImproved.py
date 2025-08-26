@@ -97,7 +97,8 @@ def optimization_improved(
     if use_pairwise_planes_loss:
         # Initialize learnable plane normals and offsets for channel pairs
         from freePlanesContourCLPairwise import init_free_plane_normals_pairwise, init_free_plane_offsets_pairwise
-        num_pairs = 6 * 5 // 2  # C(6,2) = 15 pairs
+        from channelPairsConfig import get_num_valid_pairs
+        num_pairs = get_num_valid_pairs(6)  # 12 valid pairs (excluding opposites)
         plane_normals = init_free_plane_normals_pairwise(6, device, init_scale=0.1)
         plane_offsets = init_free_plane_offsets_pairwise(6, device, init_scale=0.1)
         pinned_axes_torch = torch.from_numpy(pinned_axes).float().to(device)  # Still needed for initialization
