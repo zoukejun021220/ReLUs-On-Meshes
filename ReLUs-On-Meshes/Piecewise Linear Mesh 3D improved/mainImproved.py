@@ -25,6 +25,8 @@ def main():
     use_pca_axes = True           # Set to False to use world axes
     use_soft_pairs = False        # Set to True to use soft pairs contour loss for stable triple points
     use_free_planes = False       # Set to True to use free planes with learnable normals (not axis-aligned)
+    use_pairwise_planes = True   # Set to True to use channel-pairwise planes (one plane per channel pair)
+    use_svd_init_after_warmup = True  # Set to True to reinitialize planes with SVD after warmup
     
     # Step 1: Load the mesh
     print("Loading mesh...")
@@ -36,7 +38,7 @@ def main():
     # vertices_np, faces_np = create_icosphere_mesh(target_points=target_points, radius=1.0)
     
     # Option 2: Load from VTK file
-    input_filename = "/home/kejunzou/Projects/ReLUs on Meshes/ReLUs-On-Meshes/Piecewise Linear Mesh 3D improved/l1-poly-dat/hex/kitty/orig.tet.vtk"
+    input_filename = "/home/kejunzou/Projects/ReLUs on Meshes/ReLUs-On-Meshes/Piecewise Linear Mesh 3D improved/l1-poly-dat/hex/canewt/orig.tet.vtk"
     vertices_np, faces_np = load_volume_tet_mesh_and_extract_surface(input_filename)
     
     elapsed = time.time() - start_time
@@ -52,6 +54,9 @@ def main():
     
     if use_free_planes:
         print("Using free planes - plane orientations will be learned during optimization")
+        print("(Anchor points are still used for pinning constraints)")
+    elif use_pairwise_planes:
+        print("Using channel-pairwise planes - one plane per channel pair will be learned")
         print("(Anchor points are still used for pinning constraints)")
     
     # Convert to torch tensor
@@ -74,23 +79,25 @@ def main():
         'faces_np': faces_np,
         'pinned_indices': pinned_indices,
         'pinned_axes': pinned_axes,
-        'n_iters': 500000,
+        'n_iters': 100000,
         'warmup_iters': 5000,
-        'beta_initial': 1.0,
+        'beta_initial': 3.0,
         'beta_warmup': 3.0,
-        'beta_final': 50.0,
+        'beta_final': 100.0,
         'lambda_contour_initial': 0.0,
         'lambda_contour_warmup': 0.01,
-        'lambda_contour_final': 12.0,
-        'lambda_smooth': 0.2,
-        'lambda_area_initial': 0.2,
-        'lambda_area_final': 2.0,
+        'lambda_contour_final': 30.0,
+        'lambda_smooth': 1,
+        'lambda_area_initial': 2,
+        'lambda_area_final': 20.0,
         'enable_early_stopping': False,
         'patience': 2000,
         'print_every': 1000,
-        'use_anchored_loss': not use_soft_pairs and not use_free_planes,  # Use anchored loss if not using other losses
+        'use_anchored_loss': not use_soft_pairs and not use_free_planes and not use_pairwise_planes,  # Use anchored loss if not using other losses
         'use_soft_pairs_loss': use_soft_pairs,    # Use soft pairs loss for stable triple points
         'use_free_planes_loss': use_free_planes,  # Use free planes with learnable normals
+        'use_pairwise_planes_loss': use_pairwise_planes,  # Use channel-pairwise planes
+        'use_svd_init_after_warmup': use_svd_init_after_warmup,  # Reinit planes after warmup
         'checkpoint_dir': 'checkpoints',
         'checkpoint_interval': 5000,
         'input_filename': input_filename,
@@ -98,7 +105,9 @@ def main():
     
     if use_improved_optimizer:
         # Use shock-therapy style optimizer
-        if use_free_planes:
+        if use_pairwise_planes:
+            loss_type = "channel-pairwise planes"
+        elif use_free_planes:
             loss_type = "free planes"
         elif use_soft_pairs:
             loss_type = "soft pairs"
@@ -114,7 +123,9 @@ def main():
         )
     else:
         # Use sinusoidal optimizer
-        if use_free_planes:
+        if use_pairwise_planes:
+            loss_type = "channel-pairwise planes"
+        elif use_free_planes:
             loss_type = "free planes"
         elif use_soft_pairs:
             loss_type = "soft pairs"

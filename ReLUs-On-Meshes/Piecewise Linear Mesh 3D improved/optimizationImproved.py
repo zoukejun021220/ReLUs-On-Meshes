@@ -38,6 +38,8 @@ def optimization_improved(
     use_anchored_loss: bool = True,
     use_soft_pairs_loss: bool = False,
     use_free_planes_loss: bool = False,
+    use_pairwise_planes_loss: bool = False,
+    use_svd_init_after_warmup: bool = True,
     checkpoint_dir: str = "checkpoints",
     checkpoint_interval: int = 500,
     input_filename: Optional[str] = None,
@@ -92,7 +94,17 @@ def optimization_improved(
     plane_offsets = nn.Parameter(torch.zeros(6, device=device))
     
     # Handle plane initialization based on loss type
-    if use_free_planes_loss:
+    if use_pairwise_planes_loss:
+        # Initialize learnable plane normals and offsets for channel pairs
+        from freePlanesContourCLPairwise import init_free_plane_normals_pairwise, init_free_plane_offsets_pairwise
+        num_pairs = 6 * 5 // 2  # C(6,2) = 15 pairs
+        plane_normals = init_free_plane_normals_pairwise(6, device, init_scale=0.1)
+        plane_offsets = init_free_plane_offsets_pairwise(6, device, init_scale=0.1)
+        pinned_axes_torch = torch.from_numpy(pinned_axes).float().to(device)  # Still needed for initialization
+        
+        # Include all parameters in optimizer
+        opt_params = [f_param, plane_offsets, plane_normals]
+    elif use_free_planes_loss:
         # Initialize learnable plane normals from pinned axes
         from freePlanesContourCL import init_free_plane_normals
         plane_normals = init_free_plane_normals(6, device, init_scale=0.1, pinned_axes=pinned_axes)
@@ -123,7 +135,11 @@ def optimization_improved(
     start_time = time.time()
     
     # Import the appropriate loss function
-    if use_free_planes_loss:
+    if use_pairwise_planes_loss:
+        from freePlanesContourCLPairwise import contour_alignment_free_planes_pairwise
+        contour_fn = contour_alignment_free_planes_pairwise
+        print("Using channel-pairwise planes loss (one plane per channel pair)")
+    elif use_free_planes_loss:
         from freePlanesContourCL import contour_alignment_free_planes
         contour_fn = contour_alignment_free_planes
         print("Using free planes loss (learnable normals)")
@@ -142,7 +158,16 @@ def optimization_improved(
     
     def compute_loss(beta, lambda_c, lambda_a, include_triples=False):
         """Helper to compute loss with current parameters."""
-        if use_free_planes_loss:
+        if use_pairwise_planes_loss:
+            # Use pairwise planes loss with learnable normals and offsets
+            # Get separate contour and pinning losses
+            contour_loss, pinning_loss = contour_fn(
+                v, f, f_param, plane_normals, plane_offsets, pinned_indices,
+                beta_edge=beta, include_triples=include_triples
+            )
+            # Add pinning loss directly without lambda_c scaling
+            pin_weight = 10.0  # Fixed weight for pinning
+        elif use_free_planes_loss:
             # Use free planes loss with learnable normals
             # Get separate contour and pinning losses
             contour_loss, pinning_loss = contour_fn(
@@ -176,8 +201,8 @@ def optimization_improved(
         smooth_loss = smoothness_loss_optimized(f_param, vert_edges)
         area_loss, area_fracs = area_balance_loss_optimized(v, f, f_param, beta, mesh_area)
         
-        if use_free_planes_loss:
-            # For free planes, add pinning loss separately (not scaled by lambda_c)
+        if use_pairwise_planes_loss or use_free_planes_loss:
+            # For pairwise/free planes, add pinning loss separately (not scaled by lambda_c)
             total_loss = (lambda_c * contour_loss +
                          lambda_smooth * smooth_loss +
                          lambda_a * area_loss +
@@ -194,12 +219,15 @@ def optimization_improved(
             'total': total_loss.item()
         }
         
-        if use_free_planes_loss:
+        if use_pairwise_planes_loss or use_free_planes_loss:
             components['pinning'] = pinning_loss.item()
         
         return total_loss, components
     
     # Training loop with stages
+    # Track if we need to reinit planes after warmup
+    warmup_complete = False
+    
     for step in range(1, n_iters + 1):
         # Determine current stage and parameters
         if step <= warmup_iters:
@@ -210,6 +238,16 @@ def optimization_improved(
             lambda_a = lambda_area_initial
             lr = shock_lr
         elif step <= n_iters - 10000:  # Leave last 10k for refinement
+            # Check if we just finished warmup and need to reinit planes
+            if not warmup_complete and use_pairwise_planes_loss and use_svd_init_after_warmup:
+                warmup_complete = True
+                print(f"\n=== Reinitializing planes with SVD after warmup ===")
+                # Reinitialize planes based on current channel values
+                from svdPlaneInit import reinit_planes_with_svd
+                with torch.no_grad():
+                    reinit_planes_with_svd(v, f_param, plane_normals, plane_offsets, momentum=0.3)
+                print(f"Planes reinitialized with SVD-based positions\n")
+            
             # Main training
             stage = "main"
             progress = (step - warmup_iters) / (n_iters - warmup_iters - 10000)

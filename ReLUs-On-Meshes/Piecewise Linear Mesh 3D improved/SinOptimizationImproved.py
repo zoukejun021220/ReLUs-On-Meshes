@@ -42,6 +42,7 @@ def optimization_sin_improved(
     use_anchored_loss: bool = True,
     use_soft_pairs_loss: bool = False,
     use_free_planes_loss: bool = False,
+    use_pairwise_planes_loss: bool = False,
     checkpoint_dir: str = "checkpoints",
     checkpoint_interval: int = 500,
     input_filename: Optional[str] = None,
@@ -88,7 +89,17 @@ def optimization_sin_improved(
     plane_offsets = nn.Parameter(torch.zeros(6, device=device))
     
     # Handle plane initialization based on loss type
-    if use_free_planes_loss:
+    if use_pairwise_planes_loss:
+        # Initialize learnable plane normals and offsets for channel pairs
+        from freePlanesContourCLPairwise import init_free_plane_normals_pairwise, init_free_plane_offsets_pairwise
+        num_pairs = 6 * 5 // 2  # C(6,2) = 15 pairs
+        plane_normals = init_free_plane_normals_pairwise(6, device, init_scale=0.1)
+        plane_offsets = init_free_plane_offsets_pairwise(6, device, init_scale=0.1)
+        pinned_axes_torch = torch.from_numpy(pinned_axes).float().to(device)  # Still needed for initialization
+        
+        # Include all parameters in optimizer
+        opt_params = [f_param, plane_offsets, plane_normals]
+    elif use_free_planes_loss:
         # Initialize learnable plane normals from pinned axes
         from freePlanesContourCL import init_free_plane_normals
         plane_normals = init_free_plane_normals(6, device, init_scale=0.1, pinned_axes=pinned_axes)
@@ -172,7 +183,11 @@ def optimization_sin_improved(
     best_iter = 0
     
     # Import loss functions
-    if use_free_planes_loss:
+    if use_pairwise_planes_loss:
+        from freePlanesContourCLPairwise import contour_alignment_free_planes_pairwise
+        contour_fn = contour_alignment_free_planes_pairwise
+        print("Using channel-pairwise planes loss (one plane per channel pair)")
+    elif use_free_planes_loss:
         from freePlanesContourCL import contour_alignment_free_planes
         contour_fn = contour_alignment_free_planes
         print("Using free planes loss (learnable normals)")
@@ -213,7 +228,13 @@ def optimization_sin_improved(
         with torch.cuda.amp.autocast(enabled=(device.type == 'cuda')):
             # Contour loss
             if lambda_c_now > 0:
-                if use_free_planes_loss:
+                if use_pairwise_planes_loss:
+                    contour_loss, pinning_loss = contour_fn(
+                        v, f, f_param, plane_normals, plane_offsets, pinned_indices,
+                        beta_edge=beta_now, include_triples=(it > n_iters - 5000)
+                    )
+                    pin_weight = 10.0  # Fixed weight for pinning
+                elif use_free_planes_loss:
                     contour_loss, pinning_loss = contour_fn(
                         v, f, f_param, plane_normals, plane_offsets, pinned_indices,
                         beta_edge=beta_now, include_triples=(it > n_iters - 5000)
@@ -243,8 +264,8 @@ def optimization_sin_improved(
             area_loss, area_fracs = area_balance_loss_optimized(v, f, f_param, beta_now, mesh_area)
             
             # Total loss
-            if use_free_planes_loss and lambda_c_now > 0:
-                # For free planes, add pinning loss separately (not scaled by lambda_c)
+            if (use_pairwise_planes_loss or use_free_planes_loss) and lambda_c_now > 0:
+                # For pairwise/free planes, add pinning loss separately (not scaled by lambda_c)
                 total = (lambda_c_now * contour_loss +
                         lambda_smooth * smooth_loss +
                         lambda_a_now * area_loss +
@@ -257,7 +278,7 @@ def optimization_sin_improved(
         # Backward pass
         scaler.scale(total).backward()
         scaler.unscale_(opt)
-        if use_free_planes_loss:
+        if use_pairwise_planes_loss or use_free_planes_loss:
             grad_norm = nn.utils.clip_grad_norm_([f_param, plane_offsets, plane_normals], 5.0)
         else:
             grad_norm = nn.utils.clip_grad_norm_([f_param, plane_offsets], 5.0)
@@ -341,7 +362,7 @@ def optimization_sin_improved(
                 'use_free_planes': use_free_planes_loss
             }
             
-            if use_free_planes_loss:
+            if use_pairwise_planes_loss or use_free_planes_loss:
                 save_dict['plane_normals'] = plane_normals.detach().cpu().numpy()
             else:
                 save_dict['pinned_axes'] = pinned_axes
@@ -361,7 +382,7 @@ def optimization_sin_improved(
                 'use_free_planes': use_free_planes_loss
             }
             
-            if use_free_planes_loss:
+            if use_pairwise_planes_loss or use_free_planes_loss:
                 pt_dict['plane_normals'] = plane_normals.state_dict() if hasattr(plane_normals, 'state_dict') else plane_normals
             
             torch.save(pt_dict, f"{checkpoint_file}.pt")
@@ -397,7 +418,7 @@ def optimization_sin_improved(
         'use_free_planes': use_free_planes_loss
     }
     
-    if use_free_planes_loss:
+    if use_pairwise_planes_loss or use_free_planes_loss:
         final_save_dict['plane_normals'] = plane_normals.detach().cpu().numpy()
     else:
         final_save_dict['pinned_axes'] = pinned_axes
@@ -422,7 +443,7 @@ def optimization_sin_improved(
         'use_free_planes': use_free_planes_loss
     }
     
-    if use_free_planes_loss:
+    if use_pairwise_planes_loss or use_free_planes_loss:
         final_ckpt_dict['plane_normals'] = plane_normals.detach().cpu().numpy()
     else:
         final_ckpt_dict['pinned_axes'] = pinned_axes
@@ -441,7 +462,7 @@ def optimization_sin_improved(
         'use_free_planes': use_free_planes_loss
     }
     
-    if use_free_planes_loss:
+    if use_pairwise_planes_loss or use_free_planes_loss:
         pt_final_dict['plane_normals'] = plane_normals.state_dict() if hasattr(plane_normals, 'state_dict') else plane_normals
     
     torch.save(pt_final_dict, f"{final_checkpoint}.pt")
