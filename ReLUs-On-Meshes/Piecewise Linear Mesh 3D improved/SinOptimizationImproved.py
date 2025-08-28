@@ -46,6 +46,7 @@ def optimization_sin_improved(
     checkpoint_dir: str = "checkpoints",
     checkpoint_interval: int = 500,
     input_filename: Optional[str] = None,
+    resume_checkpoint: Optional[str] = None,
 ):
     """
     Improved sinusoidal optimizer with proper plane_offsets optimization.
@@ -118,8 +119,48 @@ def optimization_sin_improved(
     pin_mask = torch.full((6, 6), -1.0, device=device)
     torch.diagonal(pin_mask).fill_(1.0)
     
+    # Resume from checkpoint if provided
+    start_step = 1
+    if resume_checkpoint:
+        print(f"\nResuming from checkpoint: {resume_checkpoint}")
+        
+        # Load NPZ checkpoint
+        ckpt_data = np.load(f"{resume_checkpoint}.npz")
+        
+        # Load field values
+        f_values_loaded = ckpt_data['f']
+        f_param.data = torch.from_numpy(f_values_loaded).float().to(device)
+        
+        # Load iteration number
+        if 'iteration' in ckpt_data:
+            start_step = int(ckpt_data['iteration']) + 1
+            print(f"Resuming from iteration {start_step}")
+        
+        # Load PyTorch checkpoint
+        pt_ckpt = torch.load(f"{resume_checkpoint}.pt", map_location=device)
+        
+        # Load plane offsets
+        if 'plane_offsets' in pt_ckpt:
+            if use_pairwise_planes_loss:
+                plane_offsets.load_state_dict(pt_ckpt['plane_offsets'])
+            else:
+                plane_offsets.data = pt_ckpt['plane_offsets']
+        
+        # Load plane normals for free planes
+        if use_free_planes_loss and 'plane_normals' in pt_ckpt:
+            plane_normals.load_state_dict(pt_ckpt['plane_normals'])
+        elif use_pairwise_planes_loss and 'plane_normals' in pt_ckpt:
+            plane_normals.load_state_dict(pt_ckpt['plane_normals'])
+        
+        print("Checkpoint loaded successfully")
+    
     # Create optimizer with appropriate parameters
     opt = optim.AdamW(opt_params, lr=lr, betas=(0.9, 0.99), weight_decay=1e-4)
+    
+    # Load optimizer state if resuming
+    if resume_checkpoint and 'optimizer' in pt_ckpt:
+        opt.load_state_dict(pt_ckpt['optimizer'])
+        print("Optimizer state restored")
     
     # Custom sinusoidal multiphase learning rate scheduler
     class SinusoidalMultiphaseLR(torch.optim.lr_scheduler._LRScheduler):
@@ -206,7 +247,7 @@ def optimization_sin_improved(
     
     from smoothnessArea import smoothness_loss_optimized, area_balance_loss_optimized
     
-    for it in range(1, n_iters + 1):
+    for it in range(start_step, n_iters + 1):
         # Determine stage parameters
         if it <= warmup_iters:
             stage = "warmup"

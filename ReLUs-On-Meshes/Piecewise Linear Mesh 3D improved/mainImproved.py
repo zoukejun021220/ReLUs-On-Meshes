@@ -16,6 +16,7 @@ def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Run mesh optimization')
     parser.add_argument('--visualize', action='store_true', help='Enable visualization (requires display)')
+    parser.add_argument('--resume', type=str, help='Path to checkpoint file to resume from (without extension)')
     args = parser.parse_args()
     total_start_time = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -79,7 +80,7 @@ def main():
         'faces_np': faces_np,
         'pinned_indices': pinned_indices,
         'pinned_axes': pinned_axes,
-        'n_iters': 100000,
+        'n_iters': 1000000,
         'warmup_iters': 5000,
         'beta_initial': 3.0,
         'beta_warmup': 3.0,
@@ -101,6 +102,7 @@ def main():
         'checkpoint_dir': 'checkpoints',
         'checkpoint_interval': 5000,
         'input_filename': input_filename,
+        'resume_checkpoint': args.resume,
     }
     
     if use_improved_optimizer:
