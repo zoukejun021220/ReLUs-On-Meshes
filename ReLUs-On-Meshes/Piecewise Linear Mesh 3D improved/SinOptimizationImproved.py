@@ -128,7 +128,7 @@ def optimization_sin_improved(
         ckpt_data = np.load(f"{resume_checkpoint}.npz")
         
         # Load field values
-        f_values_loaded = ckpt_data['f']
+        f_values_loaded = ckpt_data['f_values']
         f_param.data = torch.from_numpy(f_values_loaded).float().to(device)
         
         # Load iteration number
