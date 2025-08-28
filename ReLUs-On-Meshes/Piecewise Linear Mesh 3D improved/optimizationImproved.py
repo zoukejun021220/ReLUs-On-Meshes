@@ -148,16 +148,13 @@ def optimization_improved(
         
         # Load plane offsets
         if 'plane_offsets' in pt_ckpt:
-            if use_pairwise_planes_loss:
-                plane_offsets.load_state_dict(pt_ckpt['plane_offsets'])
-            else:
-                plane_offsets.data = pt_ckpt['plane_offsets']
+            plane_offsets.data = pt_ckpt['plane_offsets']
         
         # Load plane normals for free planes
         if use_free_planes_loss and 'plane_normals' in pt_ckpt:
-            plane_normals.load_state_dict(pt_ckpt['plane_normals'])
+            plane_normals.data = pt_ckpt['plane_normals']
         elif use_pairwise_planes_loss and 'plane_normals' in pt_ckpt:
-            plane_normals.load_state_dict(pt_ckpt['plane_normals'])
+            plane_normals.data = pt_ckpt['plane_normals']
         
         print("Checkpoint loaded successfully")
     
