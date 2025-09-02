@@ -330,10 +330,12 @@ def optimization_sin_improved(
         # Advance scheduler
         scheduler.step()
         
-        # Re-pin anchors
+        # Re-pin anchors (vectorized, no Python loop)
         with torch.no_grad():
-            for k, idx in enumerate(pinned_indices):
-                f_param[idx] = pin_mask[k]
+            pins = torch.as_tensor(pinned_indices, device=device, dtype=torch.long)
+            valid_mask = (pins >= 0) & (pins < f_param.shape[0])
+            if valid_mask.any():
+                f_param[pins[valid_mask]] = pin_mask[valid_mask]
         
         if total.item() < best_loss:
             best_loss = total.item()

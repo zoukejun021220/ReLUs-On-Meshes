@@ -370,10 +370,12 @@ def optimization_improved(
         scaler.update()
         opt.zero_grad(set_to_none=True)
         
-        # Re-pin anchors
+        # Re-pin anchors (vectorized, no Python loop)
         with torch.no_grad():
-            for ch, idx in enumerate(pinned_indices):
-                f_param[idx] = pin_mask[ch]
+            pins = torch.as_tensor(pinned_indices, device=device, dtype=torch.long)
+            valid_mask = (pins >= 0) & (pins < f_param.shape[0])
+            if valid_mask.any():
+                f_param[pins[valid_mask]] = pin_mask[valid_mask]
         
         # Track best
         loss_val = total_loss.item()

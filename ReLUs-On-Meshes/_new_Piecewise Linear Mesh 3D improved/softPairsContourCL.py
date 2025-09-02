@@ -265,26 +265,25 @@ def contour_alignment_soft_pairs(
     # Weighted mean
     total_loss = (w * loss_contrib).sum() / (w.sum() + 1e-9)
     
-    # Triple point loss (optional)
+    # Triple point loss (optional, fully vectorized)
     if include_triples:
-        # Find vertices that are on 3+ boundaries
-        vertex_boundary_count = torch.zeros(V, device=device)
-        for e in edge_idx:
-            vertex_boundary_count[e[0]] += w[edge_idx == e].sum()
-            vertex_boundary_count[e[1]] += w[edge_idx == e].sum()
-        
+        # Accumulate boundary strength per vertex by adding each edge's weight to both endpoints
+        vertex_boundary_count = torch.zeros(V, device=device, dtype=w.dtype)
+        vertex_boundary_count.index_add_(0, edge_idx[:, 0], w)
+        vertex_boundary_count.index_add_(0, edge_idx[:, 1], w)
+
         triple_verts = torch.where(vertex_boundary_count >= 2.5)[0]
-        
-        if len(triple_verts) > 0:
+
+        if triple_verts.numel() > 0:
             # At triple points, encourage equal mixing
             f_triple = f_values[triple_verts]  # (T, C)
             p_triple = torch.softmax(f_triple, dim=1)
-            
+
             # Entropy regularization
             entropy = -(p_triple * (p_triple + 1e-9).log()).sum(dim=1)
             max_entropy = torch.log(torch.tensor(3.0, device=device))  # log(3) for 3 channels
             triple_loss = (max_entropy - entropy).mean()
-            
+
             total_loss = total_loss + 0.1 * triple_loss
     
     if return_weights:

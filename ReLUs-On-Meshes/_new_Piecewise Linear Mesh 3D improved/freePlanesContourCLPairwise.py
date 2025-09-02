@@ -184,17 +184,16 @@ def contour_alignment_free_planes_pairwise(
     else:
         loss = torch.tensor(0., device=device, dtype=dtype)
     
-    # Pinning constraint loss (vectorized)
+    # Pinning constraint loss (vectorized, no Python loops)
     pinning_loss = torch.tensor(0., device=device, dtype=dtype)
-    valid_pins = [(c, idx) for c, idx in enumerate(pinned_indices) if idx < V]
-    if valid_pins:
-        channels, indices = zip(*valid_pins)
-        f_pins = f_values[list(indices)]  # (num_valid_pins, C)
-        
-        # Compute log softmax for all pinned vertices
+    pins = torch.as_tensor(pinned_indices, device=device, dtype=torch.long)
+    valid_mask = (pins >= 0) & (pins < V)
+    if valid_mask.any():
+        valid_idx = pins[valid_mask]
+        valid_ch = torch.arange(C, device=device, dtype=torch.long)[valid_mask]
+        f_pins = f_values[valid_idx]  # (num_valid_pins, C)
         log_softmax = F.log_softmax(f_pins, dim=1)
-        # Extract the log probabilities for the pinned channels
-        log_probs = log_softmax[range(len(channels)), channels]
+        log_probs = log_softmax[torch.arange(valid_ch.numel(), device=device), valid_ch]
         pinning_loss = -log_probs.mean()
     
     # Return contour loss and pinning loss separately
