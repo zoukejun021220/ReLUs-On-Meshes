@@ -6,46 +6,40 @@ def _safe_normalize(x: torch.Tensor, dim: int = -1, eps: float = 1e-6) -> torch.
     return x / x.norm(dim=dim, keepdim=True).clamp_min(eps)
 
 
-def _grad3d_intrinsic(h_vals: torch.Tensor,
-                      v0: torch.Tensor,
-                      v1: torch.Tensor,
-                      v2: torch.Tensor) -> torch.Tensor:
+def _grad3d_intrinsic_pairs(e0: torch.Tensor,
+                            e1: torch.Tensor,
+                            h: torch.Tensor,
+                            eps: float = 1e-10) -> torch.Tensor:
     """
-    Compute intrinsic gradient on triangles using the Gram matrix (vectorized by batch).
+    Compute intrinsic gradients for many channel pairs on identical triangle geometry.
 
     Args:
-        h_vals: (B,3) scalar values at triangle vertices
-        v0,v1,v2: (B,3) triangle vertex positions
+        e0, e1: (E,3) triangle edge vectors (v1-v0, v2-v0)
+        h: (E,3,P) scalar values per triangle vertex and per pair
+        eps: numerical clamp for Gram determinant
+
     Returns:
-        (B,3) gradient vector in R^3 (lying in the triangle plane)
+        g: (E,P,3) gradient vectors in R^3 per pair
     """
-    e0 = v1 - v0
-    e1 = v2 - v0
-    b = torch.stack([h_vals[:, 1] - h_vals[:, 0],
-                     h_vals[:, 2] - h_vals[:, 0]], dim=1)
-
-    dt = torch.float64
-    e0d, e1d, bd = e0.to(dt), e1.to(dt), b.to(dt)
-
-    G00 = (e0d * e0d).sum(dim=1)
-    G01 = (e0d * e1d).sum(dim=1)
-    G11 = (e1d * e1d).sum(dim=1)
-    det = (G00 * G11 - G01 * G01)
-    mask_degenerate = det <= 1e-12
-    det = det.clamp_min(1e-12)
-
+    # Gram components depend only on geometry (E,)
+    G00 = (e0 * e0).sum(dim=1)
+    G01 = (e0 * e1).sum(dim=1)
+    G11 = (e1 * e1).sum(dim=1)
+    det = (G00 * G11 - G01 * G01).clamp_min(eps)
     invG00 = G11 / det
     invG01 = -G01 / det
     invG11 = G00 / det
 
-    a0 = invG00 * bd[:, 0] + invG01 * bd[:, 1]
-    a1 = invG01 * bd[:, 0] + invG11 * bd[:, 1]
+    # b = [h1-h0, h2-h0] with broadcasting over P
+    b0 = h[:, 1, :] - h[:, 0, :]  # (E,P)
+    b1 = h[:, 2, :] - h[:, 0, :]  # (E,P)
 
-    a0 = a0.masked_fill(mask_degenerate, 0.0)
-    a1 = a1.masked_fill(mask_degenerate, 0.0)
+    # Solve a = G^{-1} b (broadcast invG** over P)
+    a0 = invG00.unsqueeze(1) * b0 + invG01.unsqueeze(1) * b1  # (E,P)
+    a1 = invG01.unsqueeze(1) * b0 + invG11.unsqueeze(1) * b1  # (E,P)
 
-    gd = a0[:, None] * e0d + a1[:, None] * e1d
-    g = gd.to(h_vals.dtype)
+    # g = a0*e0 + a1*e1 (broadcast over P)
+    g = a0.unsqueeze(2) * e0.unsqueeze(1) + a1.unsqueeze(2) * e1.unsqueeze(1)  # (E,P,3)
     return torch.nan_to_num(g, nan=0.0, posinf=0.0, neginf=0.0)
 
 
@@ -198,19 +192,14 @@ def contour_alignment_codex(
     v1R = vertices[faces_R[:, 1]]
     v2R = vertices[faces_R[:, 2]]
 
-    # Compute intrinsic gradients for all pairs by reshaping
-    E = hL.shape[0]
-    hL_flat = hL.permute(0, 2, 1).reshape(E * P, 3)
-    hR_flat = hR.permute(0, 2, 1).reshape(E * P, 3)
-    v0L_rep = v0L.repeat_interleave(P, dim=0)
-    v1L_rep = v1L.repeat_interleave(P, dim=0)
-    v2L_rep = v2L.repeat_interleave(P, dim=0)
-    v0R_rep = v0R.repeat_interleave(P, dim=0)
-    v1R_rep = v1R.repeat_interleave(P, dim=0)
-    v2R_rep = v2R.repeat_interleave(P, dim=0)
+    # Compute intrinsic gradients for all pairs using shared geometry (no replication)
+    e0L = v1L - v0L
+    e1L = v2L - v0L
+    e0R = v1R - v0R
+    e1R = v2R - v0R
 
-    gL = _grad3d_intrinsic(hL_flat, v0L_rep, v1L_rep, v2L_rep).reshape(E, P, 3)
-    gR = _grad3d_intrinsic(hR_flat, v0R_rep, v1R_rep, v2R_rep).reshape(E, P, 3)
+    gL = _grad3d_intrinsic_pairs(e0L, e1L, hL)  # (E,P,3)
+    gR = _grad3d_intrinsic_pairs(e0R, e1R, hR)  # (E,P,3)
 
     # Face normals and in-plane projection
     def normals(v0, v1, v2):
