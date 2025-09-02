@@ -55,7 +55,8 @@ _EDGE_CACHE = {}
 
 def _build_edges_and_adjacency(faces: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Build undirected edges and adjacent triangle indices from face list.
+    Build undirected edges and adjacent triangle indices from face list using
+    fully vectorized tensor operations (no Python loops).
 
     Returns:
         edge_idx: (E,2) vertex indices (min, max)
@@ -67,28 +68,63 @@ def _build_edges_and_adjacency(faces: torch.Tensor) -> Tuple[torch.Tensor, torch
     if cached is not None:
         return cached[0], cached[1]
 
-    cpu_faces = faces.detach().cpu()
-    edge_map = {}  # (a,b)->[t0,t1]
-    T = cpu_faces.shape[0]
-    for t in range(T):
-        i0, i1, i2 = cpu_faces[t].tolist()
-        for a, b in ((i0, i1), (i1, i2), (i2, i0)):
-            e = (a, b) if a < b else (b, a)
-            if e not in edge_map:
-                edge_map[e] = [t, -1]
-            else:
-                edge_map[e][1] = t
-    import numpy as np
-    E = len(edge_map)
-    edge_idx = torch.empty((E, 2), dtype=faces.dtype)
-    edge_tris = torch.full((E, 2), -1, dtype=faces.dtype)
-    for k, (e, (t0, t1)) in enumerate(edge_map.items()):
-        edge_idx[k] = torch.tensor(e, dtype=faces.dtype)
-        edge_tris[k] = torch.tensor([t0, t1], dtype=faces.dtype)
-    edge_idx = edge_idx.to(faces.device)
-    edge_tris = edge_tris.to(faces.device)
-    _EDGE_CACHE[key] = (edge_idx, edge_tris)
-    return edge_idx, edge_tris
+    device = faces.device
+    T = faces.shape[0]
+
+    # All directed edges from faces: (T,3,2) -> (3T,2)
+    edges = torch.stack(
+        [
+            torch.stack([faces[:, 0], faces[:, 1]], dim=1),
+            torch.stack([faces[:, 1], faces[:, 2]], dim=1),
+            torch.stack([faces[:, 2], faces[:, 0]], dim=1),
+        ],
+        dim=1,
+    ).reshape(-1, 2)
+
+    # Sort endpoints to get undirected edge keys
+    edges_sorted, _ = torch.sort(edges, dim=1)  # (3T,2)
+
+    # Track which face each edge came from
+    face_indices = torch.arange(T, device=device, dtype=faces.dtype).repeat_interleave(3)
+
+    # Unique edge hashing and grouping
+    Vmax = int(faces.max().item()) + 1
+    edge_hash = edges_sorted[:, 0].to(torch.int64) * Vmax + edges_sorted[:, 1].to(torch.int64)
+    sort_hash, sort_idx = torch.sort(edge_hash)
+    sorted_edges = edges_sorted[sort_idx]
+    sorted_faces = face_indices[sort_idx]
+
+    # Find run boundaries where the edge changes
+    first = torch.ones(sort_hash.shape[0], dtype=torch.bool, device=device)
+    first[1:] = sort_hash[1:] != sort_hash[:-1]
+    change_idx = torch.nonzero(first, as_tuple=False).squeeze(1)
+    # Append sentinel end
+    change_idx = torch.cat([change_idx, sort_hash.new_tensor([sort_hash.shape[0]])])
+
+    # Counts per unique edge
+    counts = change_idx[1:] - change_idx[:-1]
+
+    # Build edge index array for all unique edges
+    edge_idx_unique = sorted_edges[change_idx[:-1]]  # (U,2)
+
+    # For adjacency, collect up to two triangles per edge
+    # Prepare output filled with -1
+    U = edge_idx_unique.shape[0]
+    edge_tris = torch.full((U, 2), -1, dtype=faces.dtype, device=device)
+
+    # Indices for the first occurrence of each run
+    first_pos = change_idx[:-1]
+    edge_tris[:, 0] = sorted_faces[first_pos]
+
+    # For edges that appear at least twice, take the second occurrence as the other triangle
+    has_second = counts >= 2
+    if has_second.any():
+        second_pos = first_pos[has_second] + 1
+        edge_tris[has_second, 1] = sorted_faces[second_pos]
+
+    # Save cache and return
+    _EDGE_CACHE[key] = (edge_idx_unique, edge_tris)
+    return edge_idx_unique, edge_tris
 
 
 def contour_alignment_codex(
@@ -154,8 +190,12 @@ def contour_alignment_codex(
     hR = F_R[:, :, ii] - F_R[:, :, jj]
 
     # Triangle geometry
-    v0L, v1L, v2L = [vertices[faces_L[:, k]] for k in (0, 1, 2)]
-    v0R, v1R, v2R = [vertices[faces_R[:, k]] for k in (0, 1, 2)]
+    v0L = vertices[faces_L[:, 0]]
+    v1L = vertices[faces_L[:, 1]]
+    v2L = vertices[faces_L[:, 2]]
+    v0R = vertices[faces_R[:, 0]]
+    v1R = vertices[faces_R[:, 1]]
+    v2R = vertices[faces_R[:, 2]]
 
     # Compute intrinsic gradients for all pairs by reshaping
     E = hL.shape[0]
