@@ -97,10 +97,12 @@ def contour_alignment_loss_anchored(
     
     # Build pairwise plane parameters
     # For pair (i,j), the boundary plane is: (n_i - n_j)·x + (b_i - b_j) = 0
+    # Normalize pair normals to unit length to keep distances on consistent scale
     n_pair = pinned_axes[i_idx] - pinned_axes[j_idx]  # (P, 3)
-    n_norm = n_pair.norm(dim=1, keepdim=True).clamp_min(eps)  # (P, 1)
+    n_norm = n_pair.norm(dim=1, keepdim=True).clamp_min(1e-3)  # avoid tiny norms
     n_hat = n_pair / n_norm  # unit normals per pair
-    d_pair = (plane_offsets[i_idx] - plane_offsets[j_idx]) / n_norm.squeeze(1)  # normalize offset consistently
+    # Scale offsets consistently with the normalized normals
+    d_pair = (plane_offsets[i_idx] - plane_offsets[j_idx]) / n_norm.squeeze(1)
     
     # Don't apply minimum weight threshold - let far edges have near-zero weight
     # This prevents noise from non-crossing edges
@@ -123,7 +125,8 @@ def contour_alignment_loss_anchored(
         w_edge = w_edge * psi
     
     # Final loss: weighted squared distances (normalize by weight mass)
-    loss = (w_edge * dist.pow(2)).sum() / (w_edge.sum() + eps)
+    mass = w_edge.sum().clamp_min(1e-6)
+    loss = (w_edge * dist.pow(2)).sum() / mass
     
     return loss
 

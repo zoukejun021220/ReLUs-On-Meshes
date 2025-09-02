@@ -326,6 +326,10 @@ def optimization_sin_improved(
         scaler.step(opt)
         scaler.update()
         opt.zero_grad(set_to_none=True)
+
+        # Light regularization/stability: softly bound plane offsets
+        with torch.no_grad():
+            plane_offsets.data.clamp_(-2.0, 2.0)
         
         # Advance scheduler
         scheduler.step()

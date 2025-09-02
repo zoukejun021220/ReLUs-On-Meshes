@@ -347,6 +347,10 @@ def optimization_improved(
         scaler.step(opt)
         scaler.update()
         opt.zero_grad(set_to_none=True)
+
+        # Light regularization/stability: softly keep plane offsets bounded
+        with torch.no_grad():
+            plane_offsets.data.clamp_(-2.0, 2.0)
         
         # Re-pin anchors (vectorized, no Python loop)
         with torch.no_grad():
