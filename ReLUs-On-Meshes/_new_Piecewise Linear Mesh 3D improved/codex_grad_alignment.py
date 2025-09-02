@@ -88,7 +88,8 @@ def _build_edges_and_adjacency(faces: torch.Tensor) -> Tuple[torch.Tensor, torch
     face_indices = torch.arange(T, device=device, dtype=faces.dtype).repeat_interleave(3)
 
     # Unique edge hashing and grouping
-    Vmax = int(faces.max().item()) + 1
+    # Compute a GPU-resident scalar for hashing to avoid CPU syncs
+    Vmax = faces.max().to(torch.int64) + 1  # tensor scalar on device
     edge_hash = edges_sorted[:, 0].to(torch.int64) * Vmax + edges_sorted[:, 1].to(torch.int64)
     sort_hash, sort_idx = torch.sort(edge_hash)
     sorted_edges = edges_sorted[sort_idx]
