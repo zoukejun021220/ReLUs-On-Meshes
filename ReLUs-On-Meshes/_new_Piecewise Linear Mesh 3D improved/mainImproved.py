@@ -17,18 +17,26 @@ def main():
     parser = argparse.ArgumentParser(description='Run mesh optimization')
     parser.add_argument('--visualize', action='store_true', help='Enable visualization (requires display)')
     parser.add_argument('--resume', type=str, help='Path to checkpoint file to resume from (without extension)')
+    parser.add_argument(
+        '--loss',
+        type=str,
+        default='anchored',
+        choices=['anchored', 'soft_pairs', 'free_planes', 'pairwise_planes', 'codex'],
+        help='Select contour loss: anchored | soft_pairs | free_planes | pairwise_planes | codex'
+    )
     args = parser.parse_args()
     total_start_time = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Configuration
     use_improved_optimizer = True  # Set to False to use sinusoidal optimizer
-    use_pca_axes = True           # Set to False to use world axes
-    use_soft_pairs = False        # Set to True to use soft pairs contour loss for stable triple points
-    use_free_planes = False       # Set to True to use free planes with learnable normals (not axis-aligned)
-    use_pairwise_planes = True   # Set to True to use channel-pairwise planes (one plane per channel pair)
-    use_svd_init_after_warmup = True  # Set to True to reinitialize planes with SVD after warmup
-    use_codex_loss = False        # Set to True to use Codex intrinsic 3D gradient-alignment loss
+    use_pca_axes = True            # Set to False to use world axes
+    # Loss selection via CLI
+    use_soft_pairs = (args.loss == 'soft_pairs')
+    use_free_planes = (args.loss == 'free_planes')
+    use_pairwise_planes = (args.loss == 'pairwise_planes')
+    use_codex_loss = (args.loss == 'codex')  # Codex intrinsic 3D gradient-alignment loss
+    use_svd_init_after_warmup = True  # Reinitialize planes with SVD after warmup (where applicable)
     
     # Step 1: Load the mesh
     print("Loading mesh...")
@@ -40,7 +48,7 @@ def main():
     # vertices_np, faces_np = create_icosphere_mesh(target_points=target_points, radius=1.0)
     
     # Option 2: Load from VTK file
-    input_filename = "/home/kejunzou/Projects/ReLUs on Meshes/ReLUs-On-Meshes/Piecewise Linear Mesh 3D improved/l1-poly-dat/hex/canewt/orig.tet.vtk"
+    input_filename = "/home/kejunzou/Projects/ReLUs on Meshes/ReLUs-On-Meshes/_codex_Piecewise Linear Mesh 3D improved/l1-poly-dat/hex/canewt/orig.tet.vtk"
     vertices_np, faces_np = load_volume_tet_mesh_and_extract_surface(input_filename)
     
     elapsed = time.time() - start_time
@@ -87,7 +95,7 @@ def main():
         'faces_np': faces_np,
         'pinned_indices': pinned_indices,
         'pinned_axes': pinned_axes,
-        'n_iters': 1000000,
+        'n_iters': 100000,
         'warmup_iters': 5000,
         'beta_initial': 3.0,
         'beta_warmup': 3.0,
@@ -169,7 +177,7 @@ def main():
                 f_values=f_optimized,
                 pinned_indices=pinned_indices,
                 region_names=region_names,
-                subdivisions=3
+                subdivisions=4
             )
         except ImportError as e:
             print(f"Warning: Could not import visualization libraries: {e}")

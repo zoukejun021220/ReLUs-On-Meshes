@@ -126,6 +126,33 @@ def optimization_improved(
     # Pin mask
     pin_mask = torch.full((6, 6), -1.0, device=device)
     torch.diagonal(pin_mask).fill_(1.0)
+
+    # Precompute edge topology (edge list and triangle adjacency) for Codex loss
+    # Build once outside the training loop to avoid CPU work per-iteration
+    def _build_edges_and_adjacency_once(faces_torch: torch.Tensor):
+        faces_cpu = faces_torch.detach().cpu().numpy()
+        edge_map = {}
+        import numpy as _np
+        T = faces_cpu.shape[0]
+        for t in range(T):
+            i0, i1, i2 = int(faces_cpu[t, 0]), int(faces_cpu[t, 1]), int(faces_cpu[t, 2])
+            for a, b in ((i0, i1), (i1, i2), (i2, i0)):
+                e = (a, b) if a < b else (b, a)
+                if e not in edge_map:
+                    edge_map[e] = [t, -1]
+                else:
+                    edge_map[e][1] = t
+        E = len(edge_map)
+        edge_idx = torch.empty((E, 2), dtype=faces_torch.dtype, device=device)
+        edge_tris = torch.full((E, 2), -1, dtype=faces_torch.dtype, device=device)
+        for k, (e, (t0, t1)) in enumerate(edge_map.items()):
+            edge_idx[k, 0] = e[0]
+            edge_idx[k, 1] = e[1]
+            edge_tris[k, 0] = t0
+            edge_tris[k, 1] = t1
+        return edge_idx, edge_tris
+
+    edge_idx, edge_tris = _build_edges_and_adjacency_once(f)
     
     # Resume from checkpoint if provided
     start_step = 1
@@ -186,7 +213,7 @@ def optimization_improved(
         print("Using free planes loss (learnable normals)")
     elif use_codex_grad_alignment_loss:
         # Import Codex loss from sibling _codex_ directory
-        import os, sys
+        import sys
         this_dir = os.path.dirname(__file__)
         codex_dir = os.path.join(os.path.dirname(this_dir), "_codex_Piecewise Linear Mesh 3D improved")
         if codex_dir not in sys.path:
@@ -230,7 +257,11 @@ def optimization_improved(
         elif use_codex_grad_alignment_loss:
             # Codex intrinsic 3D gradient-alignment loss (no planes/pins)
             contour_loss = contour_fn(
-                v, f, f_param, beta_edge=beta, include_triples=include_triples
+                v, f, f_param,
+                beta_edge=beta,
+                include_triples=include_triples,
+                edge_idx=edge_idx,
+                edge_tris=edge_tris,
             )
         elif use_soft_pairs_loss:
             # Use soft pairs loss

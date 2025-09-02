@@ -1,5 +1,9 @@
 import numpy as np
 import pyvista as pv
+from matplotlib.colors import ListedColormap
+from typing import Optional
+import numpy as np
+import pyvista as pv
 import vtk
 import numpy as np
 import pyvista as pv
@@ -15,7 +19,7 @@ import matplotlib.pyplot as plt
 def subdivide_mesh_with_values(
     vertices: np.ndarray,    # shape (N, 3)
     faces: np.ndarray,       # shape (T, 3)
-    f_values: np.ndarray,    # shape (N, C), 6-channel (or more) fields
+    f_values: np.ndarray,    # shape (N, C),  6-channel (or more) fields
     num_subdivisions: int = 1
 ):
     """
@@ -25,8 +29,8 @@ def subdivide_mesh_with_values(
       - new_f_values: shape (N', C)
     where each newly created midpoint inherits an averaged field value.
 
-    This allows us to visualize a finer mesh with sharper boundary edges
-    once applied argmax to the interpolated field.
+    This allows to visualize a finer mesh with sharper boundary edges
+    once apply argmax to the interpolated field.
     """
     # Convert to lists for easier append
     current_vertices = vertices.tolist()  # each entry is [x,y,z]
@@ -149,7 +153,7 @@ def visualize_segmentation(
         from matplotlib.colors import ListedColormap
 
         # For 6-channel data, here are 6 sample RGBA colors
-      
+        # Adjust or expand to match channels
         region_colors = np.array([
             [1.0, 0.0, 0.0, 1.0],  # Red
             [0.0, 0.0, 1.0, 1.0],  # Blue
@@ -158,7 +162,7 @@ def visualize_segmentation(
             [1.0, 0.0, 1.0, 1.0],  # Magenta
             [0.0, 1.0, 1.0, 1.0],  # Cyan
         ])
-        
+       
 
         region_cmap = ListedColormap(region_colors)
 
@@ -235,7 +239,7 @@ def visualize_segmentation(
         ax  = fig.add_subplot(111, projection='3d')
         
         # map each label to a color
-   
+
         color_list = np.array([
             [1.0, 0.0, 0.0],
             [0.0, 0.0, 1.0],
@@ -257,53 +261,3 @@ def visualize_segmentation(
         ax.set_title(f"Hardmax Visualization (subdiv={subdivisions}, Matplotlib fallback)")
         plt.show()
 
-
-def load_volume_tet_mesh_and_extract_surface(file_path):
-    """
-    Loads a VTK (or VTU) file containing a volumetric tetrahedral mesh,
-    extracts its boundary surface, and returns a (vertices, faces) pair
-    with all boundary faces triangulated.
-
-    Args:
-        file_path (str): Path to the VTK/VTU file.
-
-    Returns:
-        vertices_np (np.ndarray): Array of shape (N, 3) containing surface vertex coordinates.
-        faces_np (np.ndarray): Array of shape (F, 3) containing triangulated surface faces (vertex indices).
-    """
-    # 1) Read mesh from file
-    mesh = pv.read(file_path)  # PyVista automatically guesses file type (VTK, VTU, etc.)
-
-    # 2) Extract the boundary surface
-    surface_mesh = mesh.extract_surface()
-
-    # 3) Triangulate (ensures only triangular cells)
-    surface_mesh = surface_mesh.triangulate()
-
-    # surface_mesh.faces is a "face array" of the form [3, i0, i1, i2, 3, i0, i1, i2, ...]
-    # which we can reshape into a matrix of shape (num_faces, 4), and drop the first column (the "3")
-    faces_array = surface_mesh.faces.reshape(-1, 4)[:, 1:]  # shape: (num_faces, 3)
-
-    # Extract points
-    vertices_np = surface_mesh.points  # shape: (N, 3)
-
-    return vertices_np, faces_array
-# Here's how to use the function:
-if __name__ == "__main__":
-    vertices_np, faces_np = load_volume_tet_mesh_and_extract_surface("/home/kejunzou/Projects/ReLUs on Meshes/ReLUs-On-Meshes/Piecewise Linear Mesh 3D improved/l1-poly-dat/hex/canewt/orig.tet.vtk")
-    
-    data=np.load("/home/kejunzou/Projects/ReLUs on Meshes/checkpoints/run_20250831_115904/checkpoint_step_040000.npz")
-    f_values=data["f_values"]
- 
-    
-    visualize_segmentation(
-        vertices_np=vertices_np,
-        faces_np=faces_np,
-        f_values=f_values,
-      
-        subdivisions=4,  # Adjust as needed
-       
-    )
-    
-    
-    pass
