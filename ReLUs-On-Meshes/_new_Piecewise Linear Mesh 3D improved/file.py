@@ -225,90 +225,60 @@ def compute_face_areas(vertices_np, faces_np):
 
 def build_triangle_adjacency(faces_np):
     """
-    Find pairs of triangles that share an edge.
-    More optimized implementation with vectorized operations where possible.
-    
+    Find pairs of triangles that share an edge (fully vectorized NumPy).
+
     Args:
         faces_np: Array of shape (T, 3) containing triangle indices
-        
+
     Returns:
         adjacency: Array of shape (E, 2) containing pairs of adjacent triangle indices
     """
-    # Use numpy operations to create edges
     T = faces_np.shape[0]
-    
-    # Create an array of all edges (3 edges per triangle)
-    all_edges = np.zeros((T * 3, 3), dtype=np.int64)
-    
-    # For each triangle, create its 3 edges as (min_idx, max_idx, tri_idx)
-    for t_idx in range(T):
-        tri = faces_np[t_idx]
-        i1, i2, i3 = tri
-        
-        # Sort vertex indices for each edge
-        edges = np.array([
-            [min(i1, i2), max(i1, i2), t_idx],
-            [min(i2, i3), max(i2, i3), t_idx],
-            [min(i3, i1), max(i3, i1), t_idx]
-        ])
-        
-        all_edges[t_idx*3:t_idx*3+3] = edges
-    
-    # Sort by edge (first by min_idx, then by max_idx)
-    sorted_edges = all_edges[np.lexsort((all_edges[:, 1], all_edges[:, 0]))]
-    
-    # Find edges that appear exactly twice (shared by 2 triangles)
-    adjacency = []
-    i = 0
-    while i < len(sorted_edges) - 1:
-        if (sorted_edges[i, 0] == sorted_edges[i+1, 0] and 
-            sorted_edges[i, 1] == sorted_edges[i+1, 1]):
-            # Found a shared edge
-            t1 = sorted_edges[i, 2]
-            t2 = sorted_edges[i+1, 2]
-            adjacency.append((min(t1, t2), max(t1, t2)))
-            i += 2
-        else:
-            i += 1
-    
-    return np.array(adjacency, dtype=np.int64)
+    # Build three edges per triangle and sort edge endpoints
+    edges = np.concatenate(
+        [faces_np[:, [0, 1]], faces_np[:, [1, 2]], faces_np[:, [2, 0]]], axis=0
+    )  # (3T,2)
+    edges_sorted = np.sort(edges, axis=1)
+    tri_idx = np.repeat(np.arange(T, dtype=np.int64), 3)
+
+    # Structured sort/group by (v0,v1)
+    dtype = [('v0', np.int64), ('v1', np.int64), ('t', np.int64)]
+    es = np.empty(edges_sorted.shape[0], dtype=dtype)
+    es['v0'] = edges_sorted[:, 0]
+    es['v1'] = edges_sorted[:, 1]
+    es['t'] = tri_idx
+    order = np.lexsort((es['v1'], es['v0']))
+    es = es[order]
+
+    # Run-length encoding to find duplicates
+    same = (es['v0'][1:] == es['v0'][:-1]) & (es['v1'][1:] == es['v1'][:-1])
+    starts = np.concatenate(([0], np.nonzero(~same)[0] + 1, [len(es)]))
+    counts = np.diff(starts)
+
+    # Keep edges with exactly two triangles
+    mask2 = counts == 2
+    if not np.any(mask2):
+        return np.empty((0, 2), dtype=np.int64)
+    s2 = starts[:-1][mask2]
+    t0 = es['t'][s2]
+    t1 = es['t'][s2 + 1]
+    return np.stack([np.minimum(t0, t1), np.maximum(t0, t1)], axis=1)
 
 def build_vertex_edges(faces_np):
     """
-    Find all unique edges in the mesh with vectorized operations.
-    
+    Find all unique undirected edges in the mesh (vectorized NumPy).
+
     Args:
         faces_np: Array of shape (T, 3) containing triangle indices
-        
+
     Returns:
         edges: Array of shape (E, 2) containing vertex edge indices
     """
-    # Extract all edges from triangles
-    T = faces_np.shape[0]
-    all_edges = np.zeros((T * 3, 2), dtype=np.int64)
-    
-    # For each triangle, extract sorted edges
-    for t_idx in range(T):
-        i1, i2, i3 = faces_np[t_idx]
-        
-        # Sort vertex indices for each edge
-        edges = np.array([
-            [min(i1, i2), max(i1, i2)],
-            [min(i2, i3), max(i2, i3)],
-            [min(i3, i1), max(i3, i1)]
-        ])
-        
-        all_edges[t_idx*3:t_idx*3+3] = edges
-    
-    # Use numpy's unique function on structured arrays to find unique edges
-    dtype = [('v1', np.int64), ('v2', np.int64)]
-    structured_edges = np.array([(e[0], e[1]) for e in all_edges], dtype=dtype)
-    unique_edges = np.unique(structured_edges)
-    
-    # Convert back to regular array
-    edges = np.array([(e[0], e[1]) for e in unique_edges], dtype=np.int64)
-    
-    return edges
+    edges = np.concatenate(
+        [faces_np[:, [0, 1]], faces_np[:, [1, 2]], faces_np[:, [2, 0]]], axis=0
+    )
+    edges_sorted = np.sort(edges, axis=1)
+    return np.unique(edges_sorted, axis=0)
 
 ###############################################################################
 # 3) Choose pinned vertices for 6 regions

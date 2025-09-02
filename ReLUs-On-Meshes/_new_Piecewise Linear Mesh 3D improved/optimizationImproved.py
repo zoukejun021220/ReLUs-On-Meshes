@@ -128,31 +128,9 @@ def optimization_improved(
     torch.diagonal(pin_mask).fill_(1.0)
 
     # Precompute edge topology (edge list and triangle adjacency) for Codex loss
-    # Build once outside the training loop to avoid CPU work per-iteration
-    def _build_edges_and_adjacency_once(faces_torch: torch.Tensor):
-        faces_cpu = faces_torch.detach().cpu().numpy()
-        edge_map = {}
-        import numpy as _np
-        T = faces_cpu.shape[0]
-        for t in range(T):
-            i0, i1, i2 = int(faces_cpu[t, 0]), int(faces_cpu[t, 1]), int(faces_cpu[t, 2])
-            for a, b in ((i0, i1), (i1, i2), (i2, i0)):
-                e = (a, b) if a < b else (b, a)
-                if e not in edge_map:
-                    edge_map[e] = [t, -1]
-                else:
-                    edge_map[e][1] = t
-        E = len(edge_map)
-        edge_idx = torch.empty((E, 2), dtype=faces_torch.dtype, device=device)
-        edge_tris = torch.full((E, 2), -1, dtype=faces_torch.dtype, device=device)
-        for k, (e, (t0, t1)) in enumerate(edge_map.items()):
-            edge_idx[k, 0] = e[0]
-            edge_idx[k, 1] = e[1]
-            edge_tris[k, 0] = t0
-            edge_tris[k, 1] = t1
-        return edge_idx, edge_tris
-
-    edge_idx, edge_tris = _build_edges_and_adjacency_once(f)
+    # Use the fully vectorized CUDA implementation from codex_grad_alignment
+    from codex_grad_alignment import _build_edges_and_adjacency as _build_edges_and_adjacency_cuda
+    edge_idx, edge_tris = _build_edges_and_adjacency_cuda(f)
     
     # Resume from checkpoint if provided
     start_step = 1
