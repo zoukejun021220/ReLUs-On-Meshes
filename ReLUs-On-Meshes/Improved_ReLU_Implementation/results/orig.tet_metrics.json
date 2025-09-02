@@ -1,0 +1,8 @@
+{
+  "mesh_name": "orig.tet",
+  "num_vertices": 1110,
+  "num_faces": 2220,
+  "anchor_method": "axis",
+  "elapsed_time": 1.9824573993682861,
+  "planarity": {
+    "mean_angle": 
