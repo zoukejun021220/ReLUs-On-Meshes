@@ -1,0 +1,29 @@
+# Ignore all loose files in repository root
+/*
+
+# Re-include directories so their tracked contents can be committed
+!*/
+
+# Retain this ignore file
+!.gitignore
+
+# Ignore specific directory patterns
+*_hj/
+*_align/
+
+# Ignore environment and asset directories
+.venv/
+.vizenv/
+_new_Piecewise\ Linear\ Mesh\ 3D\ improved/
+pics/
+HexaLab/
+
+# Common build/cache noise
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Training checkpoints
+voronoi_results_checkpoints/
+*:Zone.Identifier
