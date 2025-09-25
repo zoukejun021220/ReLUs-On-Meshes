@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en" xml:lang="en" xmlns="http://www.w3.org/1999/xhtml">
+
+<head>
+    <meta charset=utf-8>
+    <meta http-equiv="Content-Language" content="en">
+    <meta name="google" content="notranslate">
+    <title>HexaLab</title>
+    <link rel="icon" href="img/favicon.png" type="image/x-icon"/>
+    <link rel="stylesheet" href="css/jquery-ui.css">
+    <link rel="stylesheet" href="css/spectrum.css">
+    <link rel="stylesheet" href="css/hexalab.css">
+    <link href="https://fonts.googleapis.com/css?family=Raleway" rel="stylesheet">
+    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.0.13/css/all.css" integrity="sha384-DNOHZ68U8hZfKXOrtjWvjxusGo9WQnrNx2sqG0tfsghAvtVlRW3tvkXWZh58N9jp" crossorigin="anonymous">
+
+    <script type="text/javascript" id="cookiebanner" src="js/external/cookiebanner.js"
+                data-height="20px" data-position="top" data-mask="true"
+                data-message="<center><br><br><br>We use technical, statistical and third parties-cookies to improve HexaLab experience. <br>We DO NOT use profiling and advertising cookies.<br>We reserve the right of tracking your usage of HexaLab for collecting statistical information in aggregate anonymous way. <br><br><b>Any 3D model loaded inside HexaLab will always stay only on your client and NO 3D data is never ever transmitted</b>.<br><br>If you use HexaLab, please cite it:<br><br><br> <b> HexaLab.net: an online viewer for hexahedral meshes<br>
+Matteo Bracci, Marco Tarini, Nico Pietroni, Marco Livesu, Paolo Cignoni<br><a href='https://doi.org/10.1016/j.cad.2018.12.003'>Computer-Aided Design, Volume 110, May 2019</a></b><br><br><br>Click anywhere to acknowledge this info and start using HexaLab.</center><br><br><br>" ></script>
+    <script src="js/external/jquery-3.6.1.min.js"></script>
+    <script src="js/external/jquery-ui.min.js"></script>
+    <script src="js/external/jquery.dragbetter.js"></script>
+    <script src="js/external/spectrum.1.8.1.js"></script>
+    <script src="js/external/r145/three.min.js"></script>
+    <script src="js/external/plotly.js"></script>
+    <script src="js/external/FileSaver.js"></script>
+    <script src="js/external/Stats.js"></script>
+    <script src="js/external/object_hash.js"></script>
+    <script src="js/external/jszip.min.js"></script>
+    <script src="js/external/js.cookie.js"></script>
+	<script></script>
+</head>
+
+<body>
+	<aside id="GUI">
+		<header id="toolbar"  >
+			<h1>HexaLab<h1mini><a href="https://github.com/cnr-isti-vclab/HexaLab#Release-Notes">2023.11</a></h1mini></h1>
+			<div id="toolbar_buttons">
+				<button id="load_mesh" title="Open hex-mesh from local file...">
+				<img src="img\open_256.png" width=20 height=20 ALT="Open"></img>
+				</button>
+				<button id="process_pack" title="Open .zip file and process all contained meshes">
+                <img src="img\openzip_256.png" width=20 height=20 ALT="Process pack"></img>
+                </button>
+				<button id="home" title="Reset Camera">
+				<img src="img\icon_reload.png" width=20 height=20 ALT="Reset"></img>
+				</button>
+				<!-- button id="plot" title="Quality Histogram">
+					<i class="fa fa-bar-chart"></i>
+				</button -->
+				<button id="save_settings" title="Save settings (Ctrl+C to copy to clipboard)">
+				<img src="img\setting_save.png" width=20 height=20 ALT="Save Settings"></img>
+				</button>
+				<button id="load_settings" title="Open settings (Ctrl+V to paste from clipboard)">
+				<img src="img\setting_load.png" width=20 height=20 ALT="Open Settings"></img>
+				</button>
+				<button id="snapshot" title="Screenshot">
+				<img src="img\icon_screenshot.png" width=20 height=20 ALT="Save snapshot"></img>
+				</button>
+                <button id="github" title="Info &amp Sources (GitHub page)">
+				<img src="img\github-logo.png" width=20 height=20 ALT="GitHub"></img>
+				</button>
+				<!--button id="about" title="About">
+					<i class="fa fa-question"></i>
+				</button-->
+			</div>
+		</header>
+
+		<section id="model_menu" class="menubox">
+			<h2>Mesh</h2>
+			<div class="menu_content">
+				<div class="menu_row">
+					<label>Source</label>
+					<div class="menu_row_input">
+						<select id="mesh_source">
+							<option value="-2" selected="selected" style="display: none;">Select a mesh source&hellip;</option>
+							<option value="-1">Select Local File&hellip;</option>
+						</select>
+					</div>
+				</div>
+				<div class="menu_row">
+					<div id="mesh_info_1" class="menu_row_infobox">
+						<div class="box_text">
+						</div>
+						<div class="box_buttons">
+							<button id="source_pdf">PDF</button>
+							<button id="source_web">Web</button>
+							<button id="source_doi">DOI</button>
+						</div>
+					</div>
+				</div>
+				<div class="menu_row">
+					<div class="menu_row_input">
+						<select id="paper_mesh_picker">
+						</select>
+					</div>
+				</div>
+                <div class="menu_row">
+                    <div class="menu_row_infobox" id="progress_row">
+                        <div class="box_text">
+                        </div>
+                    </div>
+                </div>
+				<div class="menu_row">
+					<div id="mesh_info_2" class="menu_row_infobox">
+						<div class="box_text">
+						</div>
+					</div>
+				</div>
+			</div>
+		</section>
+
+		<section id="plane_menu" class="menubox">
+			<h2>Filters</h2>
+
+			<div class="menu_row">
+				<label>Slice
+				<button id="plane_snap_camera" title="Slice in current view direction&#013;(shift: enforce axis-aligned)">
+				</button>
+				<button class="smallplus" id="bt0" title="Plane direction params"
+				onclick="$('#planeDirPanel').toggle(); $('#bt0').toggleClass('checked')"
+				></button></label>
+				<div class="menu_row_input">
+					<div class="slider" id="plane_offset_slider"></div>
+					<input type="number" class="scalar_value" id="plane_offset_number">
+				</div>
+			</div>
+
+			<div class="menu_subrow" id="planeDirPanel" style="display:none">
+					<span class="subspacer"></span
+					><label class="minilabel connect">direction</label>
+					<button id="plane_snap_nx" class="minibutton" title="Slice along the X axis">X</button><!--
+					--><button id="plane_snap_ny" class="minibutton"title="Slice along the Y axis">Y</button><!--
+					--><button id="plane_snap_nz" class="minibutton" title="Slice along the Z axis">Z</button>
+					<button id="plane_swap_sign" class="minibutton" title="Flip slicing plane"><img src="img\icon_flip.png" width=13 height=12 ALT="Flip"></img></button>
+					<input class="scalar_value" type="number" id="plane_nx" ><!--
+					--><input class="scalar_value" type="number" id="plane_ny"><!--
+					--><input class="scalar_value" type="number" id="plane_nz">
+			</div>
+
+
+			<div class="menu_row">
+				<label>Peel</label>
+				<div class="menu_row_input">
+					<div class="slider" id="peeling_depth_slider">
+					</div><input class="scalar_value" type="number" id="peeling_depth_number">
+				</div>
+			</div>
+
+			<div class="menu_row">
+				<label id="quality_label">Quality &ge;</label>
+				<div class="menu_row_input">
+					<div class="slider" id="quality_range_slider">
+					</div><input class="scalar_value" type="number" id="quality_max_number">
+				</div>
+			</div>
+
+			<div class="menu_row">
+			    <label>Handpick</label>
+				<button id="pick_button" class="pickbutton" title="Handpick hexas to filter [ctrl]">dig</button>
+				<button id="fill_button" class="pickbutton" title="Handpick hexas to unfilter [shift]">undig</button>
+				<button id="isolate_button" class="pickbutton" title="Isolate one hexa (hide all else)">isolate</button>
+				<button id="pick_clear_button" class="pickbutton" title="Clear all handpicks">clear</button>
+			</div>
+
+			<hr/>
+
+			<div class="menu_row">
+				<label>Regularize</label>
+				<div class="menu_row_input">
+				<div class="slider" id="erode_dilate_slider"></div>
+				</div>
+			</div>
+
+		</section>
+		<section id="rendering_menu" class="menubox">
+			<h2>Rendering</h2>
+			<div class="menu_row">
+				<label>Color</label>
+				<select id="surface_color_source" class="miniselect">
+					<option value="Default" selected="selected">Default</option>
+					<option value="ColorMap">Hex Quality</option>
+				</select>
+				<div class="menu_row_input" id="visible_color_wrapper" style="display:none;">
+					<input type="text" id="visible_outside_color">
+					<input type="text" id="visible_inside_color">
+				</div>
+				<div class="menu_row_input" id="surface_colormap_input">
+					<label class="minilabel">color-map</label>
+					<select id="color_map" class="miniselect">
+						<option value="Parula" selected="selected">Parula-like</option>
+						<option value="Jet">Jet</option>
+						<option value="RedBlue">Red-Blue</option>
+					</select>
+				</div>
+			</div>
+			<div class="menu_row">
+				<label>Separation</label>
+
+				<select id="geometry_mode" class="miniselect">
+					<option value="Smooth">Roundings</option>
+					<option value="Cracked">Fissures</option>
+					<option value="DynamicLines" selected="selected">Lines</option>
+                    <option value="Lines">Flat Lines</option>
+				</select>
+				<div class="menu_row_input">
+                    <div class="slider" id="wireframe_slider" ></div>
+					<div class="slider" id="crack_size" style="display:none;"></div>
+					<div class="slider" id="rounding_radius" style="display:none;"> </div>
+				</div>
+			</div>
+			<div class="menu_row">
+				<div class="menu_row_input">
+				<label>Silhouette</label>
+					<div class="slider" id="filtered_slider"></div>
+				</div>
+			</div>
+			<div class="menu_row">
+				<label>Irregular</label>
+				<div class="menu_row_input">
+					<div class="slider" id="singularity_slider"></div>
+				</div>
+			</div>
+			<div class="menu_row">
+				<label>Lighting</label>
+    				<select id="lighting_mode" class="miniselect">
+    					<option value="AO" selected="selected">best (AO)</option>
+    					<option value="SSAO">fast (SSAO)</option>
+                        <option value="Direct">local only</option>
+    					<option value="none">none</option>
+    				</select>
+                <div class="menu_row_input">
+                </div>
+			</div>
+		</section>
+
+		<section id="log_menu" class="menubox" style="display: none;">
+			<h2>Log</h2>
+			<div class="menu_content">
+				<textarea id="logger" readonly></textarea>
+			</div>
+		</section>
+	</aside>
+	<main id="frame">
+		<div id="drag_drop_overlay" class="first_drag_drop">
+			<div>
+				<span id="drag_drop_header">Drop a mesh here or use the menu to the side</span>
+			</div>
+		</div>
+	</main>
+
+    <!-- Emscripten module -->
+    <script src="js/module.js"></script>
+    <!-- Emscripten compiled cpp code -->
+    <script src="js/generated/hexalab_asm.js"></script>
+    <!-- HexaLab -->
+    <script src="js/ui.js"></script>
+    <script src="js/shaders/ao_eval.js"></script>
+    <script src="js/shaders/ao_pre.js"></script>
+    <script src="js/shaders/ssao_eval.js"></script>
+    <script src="js/shaders/ssao_blur.js"></script>
+    <script src="js/shaders/ssao_pre.js"></script>
+    <script src="js/shaders/alpha_pass.js"></script>
+    <script src="js/shaders/alpha_wireframe.js"></script>
+    <script src="js/shaders/fresnel.js"></script>
+    <script src="js/hexalab.js"></script>
+    <script src="js/filters/plane_filter.js"></script>
+    <script src="js/filters/peeling_filter.js"></script>
+    <script src="js/filters/quality_filter.js"></script>
+    <script src="js/filters/pick_filter.js"></script>
+    <script src="js/external/r145/TrackballControls.js"></script>
+    <script src="js/external/r145/ArcballControls.js"></script>
+    <script src="js/external/pngitxt-browser.min.js"></script>
+
+    <script type="text/javascript">
+        window.onload = function () {
+            var app = new HexaLab.App(document.getElementById('frame'));
+            app.animate();
+        }
+    </script>
+    
+</body>
+
+</html>
